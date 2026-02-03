@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "audio_receiver.h"
+#include "config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -183,10 +184,18 @@ static void client_task(void *pvParameters) {
         int block_len = rtsp_crypto_read_block(
             slot->socket, conn, buffer + buf_len, buf_capacity - buf_len);
         if (block_len <= 0) {
-          if (slot->should_stop || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+          if (slot->should_stop) {
             goto cleanup;
           }
-          continue;
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            continue;
+          }
+          // EPROTO means encrypted stream is out of sync - nonces can't be
+          // recovered without reconnecting, so close and let client reconnect
+          if (errno == EPROTO) {
+            ESP_LOGW(TAG, "Encrypted stream out of sync, closing connection");
+          }
+          goto cleanup;
         }
 
         buf_len += (size_t)block_len;
@@ -232,8 +241,10 @@ cleanup:
     conn->event_socket = -1;
   }
 
-  // Full audio cleanup if old client being killed or server stopping
-  if (slot->is_old || !server_running) {
+  // Only stop audio receiver when server is shutting down
+  // When replaced by new client (is_old), let new client manage audio receiver
+  // to avoid race conditions where we kill the new client's session
+  if (!server_running) {
     audio_receiver_stop();
   }
 
@@ -350,9 +361,10 @@ static void server_task(void *pvParameters) {
     clients[new_slot].is_old = false;
 
     // Start new client task immediately
-    BaseType_t ret =
-        xTaskCreate(client_task, "rtsp_client", 8192,
-                    (void *)(intptr_t)new_slot, 5, &clients[new_slot].task);
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        client_task, "rtsp_client", TASK_RTSP_CLIENT_STACK,
+        (void *)(intptr_t)new_slot, TASK_RTSP_CLIENT_PRIORITY,
+        &clients[new_slot].task, TASK_RTSP_CLIENT_CORE);
     if (ret != pdPASS) {
       ESP_LOGE(TAG, "Failed to create client task");
       close(new_socket);
@@ -387,8 +399,9 @@ esp_err_t rtsp_server_start(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  BaseType_t ret = xTaskCreate(server_task, "rtsp_server", 4096, NULL, 5,
-                               &server_task_handle);
+  BaseType_t ret = xTaskCreatePinnedToCore(
+      server_task, "rtsp_server", TASK_RTSP_SERVER_STACK, NULL,
+      TASK_RTSP_SERVER_PRIORITY, &server_task_handle, TASK_RTSP_SERVER_CORE);
   if (ret != pdPASS) {
     return ESP_FAIL;
   }

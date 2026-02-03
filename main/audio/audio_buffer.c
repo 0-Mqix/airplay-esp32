@@ -55,8 +55,9 @@ static bool audio_buffer_queue_chunk(audio_buffer_t *buffer,
 
   size_t total_bytes = sizeof(*hdr) + pcm_bytes;
 
+  // Generous timeout - better to block briefly than drop audio data
   BaseType_t ret = xRingbufferSend(buffer->ring, buffer->frame_buffer,
-                                   total_bytes, pdMS_TO_TICKS(10));
+                                   total_bytes, pdMS_TO_TICKS(100));
   if (ret != pdTRUE) {
     if (stats) {
       stats->buffer_underruns++;

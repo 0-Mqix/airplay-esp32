@@ -5,7 +5,6 @@
 #include <unistd.h>
 
 #include "audio_receiver.h"
-#include "ptp_clock.h"
 #include "settings.h"
 
 rtsp_conn_t *rtsp_conn_create(void) {
@@ -99,9 +98,6 @@ void rtsp_conn_cleanup(rtsp_conn_t *conn) {
   conn->timing_port = 0;
   conn->event_port = 0;
   conn->buffered_port = 0;
-
-  // Clear PTP clock for fresh sync on next connection
-  ptp_clock_clear();
 
   // Reset encryption state
   conn->encrypted_mode = false;

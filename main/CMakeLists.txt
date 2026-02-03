@@ -30,12 +30,7 @@ idf_component_register(
         "hap/tlv8.c"
         "network/wifi.c"
         "network/mdns_airplay.c"
-        "network/ptp_clock.c"
-        "network/ntp_clock.c"
         "network/socket_utils.c"
-        "network/web_server.c"
-        "network/ota.c"
-        "network/dns_server.c"
     INCLUDE_DIRS "." "audio" "rtsp" "plist" "hap" "network"
     PRIV_REQUIRES
         driver
@@ -46,8 +41,6 @@ idf_component_register(
         esp_ringbuf
         esp_driver_i2s
         esp_timer
-        esp_http_server
-        app_update
         json
         mbedtls
 )

@@ -15,16 +15,10 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
-#define RTP_HEADER_SIZE       12
-#define AUDIO_RECV_STACK_SIZE 12288
-#define AUDIO_CTRL_STACK_SIZE 4096
-#define STACK_LOG_INTERVAL_US 5000000
+#include "config.h"
 
-#if CONFIG_FREERTOS_UNICORE
-#define AUDIO_TASK_CORE 0
-#else
-#define AUDIO_TASK_CORE 1
-#endif
+#define RTP_HEADER_SIZE       12
+#define STACK_LOG_INTERVAL_US 5000000
 
 typedef struct __attribute__((packed)) {
   uint8_t flags;
@@ -110,10 +104,8 @@ static bool realtime_receive_packet(audio_stream_t *stream, uint8_t *packet,
   if (state->stats.packets_decoded > 0) {
     uint16_t expected_seq = (state->stats.last_seq + 1) & 0xFFFF;
     if (seq != expected_seq) {
-      int gap = (int)seq - (int)expected_seq;
-      if (gap < 0) {
-        gap += 65536;
-      }
+      // Use unsigned subtraction to handle wraparound correctly
+      uint16_t gap = (uint16_t)(seq - expected_seq);
       if (gap > 0 && gap < 100) {
         state->stats.packets_dropped += gap;
       }
@@ -286,8 +278,8 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
 
   stream->running = true;
   BaseType_t ret = xTaskCreatePinnedToCore(
-      receiver_task, "audio_recv", AUDIO_RECV_STACK_SIZE, stream, 8,
-      &state->task_handle, AUDIO_TASK_CORE);
+      receiver_task, "audio_recv", TASK_AUDIO_RECV_STACK, stream,
+      TASK_AUDIO_RECV_PRIORITY, &state->task_handle, TASK_AUDIO_RECV_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create receiver task");
     if (state->control_socket > 0) {
@@ -301,9 +293,9 @@ static esp_err_t realtime_start(audio_stream_t *stream, uint16_t port) {
   }
 
   if (state->control_socket > 0) {
-    ret = xTaskCreatePinnedToCore(control_receiver_task, "ctrl_recv",
-                                  AUDIO_CTRL_STACK_SIZE, stream, 7,
-                                  &state->control_task_handle, AUDIO_TASK_CORE);
+    ret = xTaskCreatePinnedToCore(
+        control_receiver_task, "ctrl_recv", TASK_CTRL_RECV_STACK, stream,
+        TASK_CTRL_RECV_PRIORITY, &state->control_task_handle, TASK_CTRL_RECV_CORE);
     if (ret != pdPASS) {
       ESP_LOGW(TAG, "Failed to create control receiver task");
       close(state->control_socket);

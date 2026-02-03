@@ -4,10 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "config.h"
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "wifi.h"
-#include "settings.h"
 
 static const char *TAG = "mdns_airplay";
 
@@ -36,10 +36,7 @@ void mdns_airplay_init(void) {
   char features_str[32];
   char service_name[80];
   char pk_str[65]; // 32 bytes = 64 hex chars + null
-  char device_name[65];
-
-  // Get device name from settings
-  settings_get_device_name(device_name, sizeof(device_name));
+  const char *device_name = CONFIG_DEVICE_NAME;
 
   // Get MAC address
   wifi_get_mac_str(mac_str, sizeof(mac_str));
@@ -57,7 +54,7 @@ void mdns_airplay_init(void) {
 
   // Create service name for RAOP: <mac>@<name>
   uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
   snprintf(service_name, sizeof(service_name), "%02X%02X%02X%02X%02X%02X@%s",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], device_name);
 

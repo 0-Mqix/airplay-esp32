@@ -3,9 +3,15 @@
 
 #include "audio_stream.h"
 
+#include "esp_log.h"
+
 #include "audio_buffer.h"
 #include "audio_decoder.h"
 #include "audio_receiver_internal.h"
+#include "audio_timing.h"
+
+static const char *TAG = "audio_stream";
+
 
 extern const audio_stream_ops_t audio_stream_realtime_ops;
 extern const audio_stream_ops_t audio_stream_buffered_ops;
@@ -32,6 +38,7 @@ bool audio_stream_process_frame(audio_receiver_state_t *state,
   if (!state || !state->decoder) {
     return false;
   }
+
 
   size_t capacity_samples = 0;
   int16_t *decode_buffer =

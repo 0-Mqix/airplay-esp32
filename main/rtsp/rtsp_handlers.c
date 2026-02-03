@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "config.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
@@ -19,10 +20,9 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "hap.h"
-#include "ntp_clock.h"
 #include "plist.h"
+#include "config.h"
 #include "rtsp_fairplay.h"
-#include "settings.h"
 #include "socket_utils.h"
 #include "tlv8.h"
 
@@ -77,7 +77,7 @@ static volatile bool event_task_should_stop = false;
 
 void rtsp_get_device_id(char *device_id, size_t len) {
   uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
   snprintf(device_id, len, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1],
            mac[2], mac[3], mac[4], mac[5]);
 }
@@ -225,8 +225,9 @@ void rtsp_start_event_port_task(int listen_socket) {
   }
   event_task_should_stop = false;
   event_listen_socket = -1;
-  xTaskCreate(event_port_task, "event_port", 3072,
-              (void *)(intptr_t)listen_socket, 5, &event_task_handle);
+  xTaskCreatePinnedToCore(event_port_task, "event_port", TASK_EVENT_PORT_STACK,
+                          (void *)(intptr_t)listen_socket, TASK_EVENT_PORT_PRIORITY,
+                          &event_task_handle, TASK_EVENT_PORT_CORE);
 }
 
 void rtsp_stop_event_port_task(void) {
@@ -361,12 +362,10 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
   if (strcmp(req->path, "/info") == 0) {
     // Build info response
     char device_id[18];
-    char device_name[65];
     static char body[4096];
     plist_t p;
 
     rtsp_get_device_id(device_id, sizeof(device_id));
-    settings_get_device_name(device_name, sizeof(device_name));
     const uint8_t *pk = hap_get_public_key();
     uint64_t features =
         ((uint64_t)AIRPLAY_FEATURES_HI << 32) | AIRPLAY_FEATURES_LO;
@@ -384,7 +383,7 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_dict_int(&p, "statusFlags", 4);
     plist_dict_data(&p, "pk", pk, 32);
     plist_dict_string(&p, "pi", "00000000-0000-0000-0000-000000000000");
-    plist_dict_string(&p, "name", device_name);
+    plist_dict_string(&p, "name", CONFIG_DEVICE_NAME);
 
     // Audio formats array
     plist_dict_array_begin(&p, "audioFormats");
@@ -524,12 +523,6 @@ static void handle_post(int socket, rtsp_conn_t *conn,
         } else if (state[0] == 0x03) {
           err = hap_pair_verify_m3(conn->hap_session, body, body_len, response,
                                    1024, &response_len);
-          // TLV8 pair-verify M3 establishes RTSP channel encryption
-          if (err == ESP_OK &&
-              conn->hap_session->pair_verify_state == PAIR_VERIFY_STATE_M4) {
-            conn->encrypted_mode = true;
-            ESP_LOGI(TAG, "RTSP encryption enabled (TLV8 pair-verify)");
-          }
         }
       } else {
         // Raw format - used for audio encryption keys, not RTSP encryption
@@ -551,6 +544,13 @@ static void handle_post(int socket, rtsp_conn_t *conn,
       rtsp_send_response(socket, conn, 200, "OK", req->cseq,
                          "Content-Type: application/octet-stream\r\n",
                          (const char *)response, response_len);
+
+      // Enable encryption AFTER sending plaintext M4 response
+      if (conn->hap_session &&
+          conn->hap_session->pair_verify_state == PAIR_VERIFY_STATE_M4) {
+        conn->encrypted_mode = true;
+        ESP_LOGI(TAG, "RTSP encryption enabled (TLV8 pair-verify)");
+      }
     } else {
       ESP_LOGE(TAG, "Pair-verify failed, err=%d", err);
       rtsp_send_response(socket, conn, 200, "OK", req->cseq,
@@ -718,8 +718,8 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     }
   }
 
-  ESP_LOGI(TAG, "SETUP: has_streams=%d, stream_count=%zu", request_has_streams,
-           stream_count);
+  ESP_LOGI(TAG, "SETUP: has_streams=%d, stream_count=%zu, is_bplist=%d, content_type='%s'",
+           request_has_streams, stream_count, is_bplist, req->content_type);
 
   if (body && body_len > 0 && is_bplist && request_has_streams) {
     for (size_t i = 0; i < stream_count; i++) {
@@ -909,11 +909,6 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
     ESP_LOGI(TAG, "Client ports: control=%u timing=%u",
              conn->client_control_port, conn->client_timing_port);
 
-    // Start NTP timing client if client has a timing port
-    if (conn->client_timing_port > 0 && conn->client_ip != 0) {
-      ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
-    }
-
     char transport_response[256];
     snprintf(transport_response, sizeof(transport_response),
              "Transport: RTP/AVP/UDP;unicast;mode=record;"
@@ -1021,6 +1016,7 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
+  ESP_LOGI(TAG, "RTSP PAUSE received, flushing");
   audio_receiver_flush();
   rtsp_send_ok(socket, conn, req->cseq);
 }
@@ -1031,6 +1027,7 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
+  ESP_LOGI(TAG, "RTSP FLUSH received, flushing");
   audio_receiver_flush();
   rtsp_send_ok(socket, conn, req->cseq);
 }
@@ -1060,8 +1057,6 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
-    // Full teardown - stop NTP timing
-    ntp_clock_stop();
     conn->timing_port = 0;
   }
 

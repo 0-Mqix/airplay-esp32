@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -294,8 +295,9 @@ esp_err_t rtsp_server_start(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  BaseType_t ret = xTaskCreate(server_task, "rtsp_server", 8192, NULL, 5,
-                               &server_task_handle);
+  BaseType_t ret = xTaskCreatePinnedToCore(
+      server_task, "rtsp_server", TASK_RTSP_SERVER_STACK, NULL,
+      TASK_RTSP_SERVER_PRIORITY, &server_task_handle, TASK_RTSP_SERVER_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create server task");
     return ESP_FAIL;

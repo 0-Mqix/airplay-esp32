@@ -39,7 +39,7 @@ esp_err_t hap_pair_verify_m1(hap_session_t *session, const uint8_t *input,
   }
 
   uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
   char device_id[18];
   snprintf(device_id, sizeof(device_id), "%02X:%02X:%02X:%02X:%02X:%02X",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

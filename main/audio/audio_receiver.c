@@ -7,10 +7,10 @@
 
 #include "audio_buffer.h"
 #include "audio_decoder.h"
+#include "audio_output.h"
 #include "audio_receiver_internal.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
-#include "ptp_clock.h"
 
 #define DEFAULT_SAMPLE_RATE     44100
 #define DEFAULT_CHANNELS        2
@@ -226,7 +226,6 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
-  receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
 
   return receiver.stream->ops->start(receiver.stream, data_port);
@@ -240,16 +239,17 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
     return ESP_FAIL;
   }
 
-  // Buffered streams use a fixed port, no need to restart if running
-  if (receiver.stream->running) {
-    return ESP_OK;
-  }
-
+  // Always reset state for new session, even if stream is already running
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
   audio_timing_reset(&receiver.timing);
-  receiver.timing.ptp_locked = ptp_clock_is_locked();
   audio_receiver_reset_blocks();
+
+  // Buffered streams use a fixed port, no need to restart if already running
+  if (receiver.stream->running) {
+    ESP_LOGI(TAG, "Buffered audio stream ready for new session");
+    return ESP_OK;
+  }
 
   return receiver.stream->ops->start(receiver.stream, tcp_port);
 }
@@ -326,13 +326,14 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
 
 bool audio_receiver_has_data(void) {
   int buffered_frames = audio_buffer_get_frame_count(&receiver.buffer);
-  return buffered_frames > 0 || receiver.timing.pending_valid;
+  return buffered_frames > 0;
 }
 
 void audio_receiver_flush(void) {
+  // Simple flush: clear I2S and buffer, continue receiving
+  audio_output_flush();
   audio_buffer_flush(&receiver.buffer);
-  audio_timing_reset(&receiver.timing);
-
+  receiver.timing.playout_started = false;
   receiver.blocks_read_in_sequence = 1;
 }
 

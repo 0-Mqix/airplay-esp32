@@ -1,5 +1,6 @@
 #include "rtsp_crypto.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -44,7 +45,8 @@ int rtsp_crypto_read_block(int socket, rtsp_conn_t *conn, uint8_t *buffer,
 
   if (block_len == 0 || block_len > RTSP_ENCRYPTED_BLOCK_MAX ||
       block_len > buffer_size) {
-    ESP_LOGE(TAG, "Invalid encrypted block length: %d", block_len);
+    ESP_LOGE(TAG, "Invalid encrypted block length: %d - stream out of sync", block_len);
+    errno = EPROTO; // Protocol error - unrecoverable, don't retry
     return -1;
   }
 
@@ -75,7 +77,8 @@ int rtsp_crypto_read_block(int socket, rtsp_conn_t *conn, uint8_t *buffer,
           buffer, &plaintext_len, NULL, encrypted, encrypted_len, len_buf,
           sizeof(len_buf), nonce, conn->hap_session->decrypt_key) != 0) {
     free(encrypted);
-    ESP_LOGE(TAG, "Failed to decrypt frame");
+    ESP_LOGE(TAG, "Failed to decrypt frame - stream corrupted");
+    errno = EPROTO; // Protocol error - unrecoverable, don't retry
     return -1;
   }
   free(encrypted);

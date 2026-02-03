@@ -15,8 +15,9 @@
 #include "audio_crypto.h"
 #include "network/socket_utils.h"
 
+#include "config.h"
+
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
-#define AUDIO_BUFFERED_STACK_SIZE  4096
 
 static const char *TAG = "audio_buf";
 
@@ -27,12 +28,24 @@ static ssize_t read_exact(audio_stream_t *stream, int sock, uint8_t *buf,
     ssize_t n = recv(sock, buf + total, len - total, 0);
     if (n <= 0) {
       if (n == 0) {
-      } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        ESP_LOGE(TAG, "Buffered audio recv error: %d", errno);
+        // Clean disconnect
+        ESP_LOGI(TAG, "Buffered audio client disconnected");
+      } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // Timeout - will retry
+        continue;
+      } else if (errno == ECONNRESET || errno == ENOTCONN || errno == EPIPE ||
+                 errno == EBADF || !stream->running) {
+        // Expected disconnect scenarios - not an error
+        ESP_LOGI(TAG, "Buffered audio connection closed");
+      } else {
+        ESP_LOGW(TAG, "Buffered audio recv error: %d", errno);
       }
       return -1;
     }
     total += (size_t)n;
+  }
+  if (!stream->running) {
+    return -1; // Shutdown requested
   }
   return (ssize_t)total;
 }
@@ -129,6 +142,14 @@ static void buffered_audio_task(void *pvParameters) {
 
     close(client_sock);
     state->buffered_client_socket = -1;
+
+    // Soft reset when client disconnects - clear stale buffer/timing state
+    // so a reconnecting client gets a clean start
+    if (stream->running) {
+      audio_buffer_flush(&state->buffer);
+      audio_timing_reset(&state->timing);
+      ESP_LOGI(TAG, "Buffered audio ready for new connection");
+    }
   }
 
   state->buffered_task_handle = NULL;
@@ -151,9 +172,9 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   state->buffered_port = bound_port;
 
   stream->running = true;
-  BaseType_t ret =
-      xTaskCreate(buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE,
-                  stream, 5, &state->buffered_task_handle);
+  BaseType_t ret = xTaskCreatePinnedToCore(
+      buffered_audio_task, "buff_audio", TASK_BUFFERED_STACK, stream,
+      TASK_BUFFERED_PRIORITY, &state->buffered_task_handle, TASK_BUFFERED_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);

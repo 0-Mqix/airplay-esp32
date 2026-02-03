@@ -44,6 +44,9 @@ typedef struct {
 
   uint64_t blocks_read;
   uint64_t blocks_read_in_sequence;
+
+  uint32_t last_rtp_timestamp;
+  bool rtp_timestamp_valid;
 } audio_receiver_state_t;
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,
