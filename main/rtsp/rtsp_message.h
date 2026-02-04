@@ -13,13 +13,13 @@
  * Parsed RTSP request structure
  */
 typedef struct {
-  char method[32];
-  char path[256];
-  int cseq;
-  char content_type[64];
-  size_t content_length;
-  const uint8_t *body;
-  size_t body_len;
+  char           method[32];
+  char           path[256];
+  int            cseq;
+  char           content_type[64];
+  size_t         content_length;
+  const uint8_t* body;
+  size_t         body_len;
 } rtsp_request_t;
 
 /**
@@ -29,7 +29,7 @@ typedef struct {
  * @param req Output: parsed request (body pointer references original data)
  * @return 0 on success, -1 on parse error
  */
-int rtsp_request_parse(const uint8_t *data, size_t len, rtsp_request_t *req);
+int rtsp_request_parse(const uint8_t* data, size_t len, rtsp_request_t* req);
 
 /**
  * Find end of HTTP/RTSP headers (\r\n\r\n)
@@ -37,21 +37,21 @@ int rtsp_request_parse(const uint8_t *data, size_t len, rtsp_request_t *req);
  * @param len Length of data
  * @return Pointer to first \r\n of header end, or NULL if not found
  */
-const uint8_t *rtsp_find_header_end(const uint8_t *data, size_t len);
+const uint8_t* rtsp_find_header_end(const uint8_t* data, size_t len);
 
 /**
  * Parse CSeq header from request
  * @param request Request string
  * @return CSeq value, or 1 if not found
  */
-int rtsp_parse_cseq(const char *request);
+int rtsp_parse_cseq(const char* request);
 
 /**
  * Parse Content-Length header from request
  * @param request Request string
  * @return Content length, or 0 if not found
  */
-int rtsp_parse_content_length(const char *request);
+int rtsp_parse_content_length(const char* request);
 
 /**
  * Get body pointer from request
@@ -60,8 +60,7 @@ int rtsp_parse_content_length(const char *request);
  * @param body_len Output: body length
  * @return Pointer to body, or NULL if none
  */
-const uint8_t *rtsp_get_body(const char *request, size_t request_len,
-                             size_t *body_len);
+const uint8_t* rtsp_get_body(const char* request, size_t request_len, size_t* body_len);
 
 /**
  * Send RTSP response (handles encryption automatically)
@@ -75,15 +74,20 @@ const uint8_t *rtsp_get_body(const char *request, size_t request_len,
  * @param body_len Body length
  * @return 0 on success, -1 on error
  */
-int rtsp_send_response(int socket, rtsp_conn_t *conn, int status_code,
-                       const char *status_text, int cseq,
-                       const char *extra_headers, const char *body,
-                       size_t body_len);
+int rtsp_send_response(
+  int          socket,
+  rtsp_conn_t* conn,
+  int          status_code,
+  const char*  status_text,
+  int          cseq,
+  const char*  extra_headers,
+  const char*  body,
+  size_t       body_len);
 
 /**
  * Send simple 200 OK response
  */
-int rtsp_send_ok(int socket, rtsp_conn_t *conn, int cseq);
+int rtsp_send_ok(int socket, rtsp_conn_t* conn, int cseq);
 
 /**
  * Send HTTP response (for GET /info before RTSP mode)
@@ -96,9 +100,14 @@ int rtsp_send_ok(int socket, rtsp_conn_t *conn, int cseq);
  * @param body_len Body length
  * @return 0 on success, -1 on error
  */
-int rtsp_send_http_response(int socket, rtsp_conn_t *conn, int status_code,
-                            const char *status_text, const char *content_type,
-                            const char *body, size_t body_len);
+int rtsp_send_http_response(
+  int          socket,
+  rtsp_conn_t* conn,
+  int          status_code,
+  const char*  status_text,
+  const char*  content_type,
+  const char*  body,
+  size_t       body_len);
 
 /**
  * Parse Transport header for client ports (AirPlay 1)
@@ -106,5 +115,4 @@ int rtsp_send_http_response(int socket, rtsp_conn_t *conn, int status_code,
  * @param control_port Output: client's control port (or 0)
  * @param timing_port Output: client's timing port (or 0)
  */
-void rtsp_parse_transport(const char *request, uint16_t *control_port,
-                          uint16_t *timing_port);
+void rtsp_parse_transport(const char* request, uint16_t* control_port, uint16_t* timing_port);

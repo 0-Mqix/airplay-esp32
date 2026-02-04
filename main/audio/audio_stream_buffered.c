@@ -7,22 +7,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "audio_crypto.h"
 #include "audio_receiver_internal.h"
-
+#include "config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-
-#include "audio_crypto.h"
 #include "network/socket_utils.h"
-
-#include "config.h"
 
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
 
-static const char *TAG = "audio_buf";
+static const char* TAG = "audio_buf";
 
-static ssize_t read_exact(audio_stream_t *stream, int sock, uint8_t *buf,
-                          size_t len) {
+static ssize_t read_exact(audio_stream_t* stream, int sock, uint8_t* buf, size_t len) {
   size_t total = 0;
   while (total < len && stream->running) {
     ssize_t n = recv(sock, buf + total, len - total, 0);
@@ -33,8 +29,7 @@ static ssize_t read_exact(audio_stream_t *stream, int sock, uint8_t *buf,
       } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
         // Timeout - will retry
         continue;
-      } else if (errno == ECONNRESET || errno == ENOTCONN || errno == EPIPE ||
-                 errno == EBADF || !stream->running) {
+      } else if (errno == ECONNRESET || errno == ENOTCONN || errno == EPIPE || errno == EBADF || !stream->running) {
         // Expected disconnect scenarios - not an error
         ESP_LOGI(TAG, "Buffered audio connection closed");
       } else {
@@ -50,20 +45,17 @@ static ssize_t read_exact(audio_stream_t *stream, int sock, uint8_t *buf,
   return (ssize_t)total;
 }
 
-static void buffered_audio_task(void *pvParameters) {
-  audio_stream_t *stream = (audio_stream_t *)pvParameters;
-  audio_receiver_state_t *state = audio_stream_state(stream);
+static void buffered_audio_task(void* pvParameters) {
+  audio_stream_t*         stream = (audio_stream_t*)pvParameters;
+  audio_receiver_state_t* state = audio_stream_state(stream);
 
   while (stream->running) {
     struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
+    socklen_t          addr_len = sizeof(client_addr);
 
-    int client_sock = accept(state->buffered_listen_socket,
-                             (struct sockaddr *)&client_addr, &addr_len);
+    int client_sock = accept(state->buffered_listen_socket, (struct sockaddr*)&client_addr, &addr_len);
     if (client_sock < 0) {
-      if (errno != EAGAIN && errno != EWOULDBLOCK && stream->running) {
-        ESP_LOGE(TAG, "Buffered audio accept error: %d", errno);
-      }
+      if (errno != EAGAIN && errno != EWOULDBLOCK && stream->running) { ESP_LOGE(TAG, "Buffered audio accept error: %d", errno); }
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
@@ -73,13 +65,10 @@ static void buffered_audio_task(void *pvParameters) {
     struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
     setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    uint8_t *packet = state->buffered_recv_buffer;
+    uint8_t* packet = state->buffered_recv_buffer;
     if (!packet) {
-      packet = heap_caps_malloc(BUFFERED_AUDIO_PACKET_SIZE,
-                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (!packet) {
-        packet = malloc(BUFFERED_AUDIO_PACKET_SIZE);
-      }
+      packet = heap_caps_malloc(BUFFERED_AUDIO_PACKET_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!packet) { packet = malloc(BUFFERED_AUDIO_PACKET_SIZE); }
       if (!packet) {
         ESP_LOGE(TAG, "Failed to allocate buffered audio packet buffer");
         close(client_sock);
@@ -91,9 +80,7 @@ static void buffered_audio_task(void *pvParameters) {
 
     while (stream->running) {
       uint8_t len_buf[2];
-      if (read_exact(stream, client_sock, len_buf, 2) != 2) {
-        break;
-      }
+      if (read_exact(stream, client_sock, len_buf, 2) != 2) { break; }
 
       uint16_t data_len = (uint16_t)((len_buf[0] << 8) | len_buf[1]);
       if (data_len < 2 || data_len > BUFFERED_AUDIO_PACKET_SIZE) {
@@ -102,26 +89,21 @@ static void buffered_audio_task(void *pvParameters) {
       }
 
       size_t packet_len = data_len - 2;
-      if (read_exact(stream, client_sock, packet, packet_len) !=
-          (ssize_t)packet_len) {
-        break;
-      }
+      if (read_exact(stream, client_sock, packet, packet_len) != (ssize_t)packet_len) { break; }
 
       state->stats.packets_received++;
 
       uint32_t seq_no = (packet[1] << 16) | (packet[2] << 8) | packet[3];
-      uint32_t timestamp =
-          (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
+      uint32_t timestamp = (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
 
-      uint8_t *decrypted = state->decrypt_buffer;
-      size_t decrypt_capacity = state->decrypt_buffer_size;
+      uint8_t* decrypted = state->decrypt_buffer;
+      size_t   decrypt_capacity = state->decrypt_buffer_size;
       if (!decrypted) {
         decrypted = packet + 12;
         decrypt_capacity = packet_len > 12 ? packet_len - 12 : 0;
       }
 
-      int decrypted_len = audio_crypto_decrypt_buffered(
-          &stream->encrypt, packet, packet_len, decrypted, decrypt_capacity);
+      int decrypted_len = audio_crypto_decrypt_buffered(&stream->encrypt, packet, packet_len, decrypted, decrypt_capacity);
       if (decrypted_len < 0) {
         state->stats.decrypt_errors++;
         state->stats.packets_dropped++;
@@ -134,10 +116,7 @@ static void buffered_audio_task(void *pvParameters) {
       state->blocks_read++;
       state->blocks_read_in_sequence++;
 
-      if (!audio_stream_process_frame(state, timestamp, decrypted,
-                                      (size_t)decrypted_len)) {
-        state->stats.packets_dropped++;
-      }
+      if (!audio_stream_process_frame(state, timestamp, decrypted, (size_t)decrypted_len)) { state->stats.packets_dropped++; }
     }
 
     close(client_sock);
@@ -156,25 +135,27 @@ static void buffered_audio_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
-static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
-  audio_receiver_state_t *state = audio_stream_state(stream);
+static esp_err_t buffered_start(audio_stream_t* stream, uint16_t port) {
+  audio_receiver_state_t* state = audio_stream_state(stream);
   if (stream->running) {
     ESP_LOGI(TAG, "Buffered audio already running, continuing");
     return ESP_OK;
   }
 
   uint16_t bound_port = port;
-  state->buffered_listen_socket =
-      socket_utils_bind_tcp_listener(port, 1, true, &bound_port);
-  if (state->buffered_listen_socket < 0) {
-    return ESP_FAIL;
-  }
+  state->buffered_listen_socket = socket_utils_bind_tcp_listener(port, 1, true, &bound_port);
+  if (state->buffered_listen_socket < 0) { return ESP_FAIL; }
   state->buffered_port = bound_port;
 
   stream->running = true;
   BaseType_t ret = xTaskCreatePinnedToCore(
-      buffered_audio_task, "buff_audio", TASK_BUFFERED_STACK, stream,
-      TASK_BUFFERED_PRIORITY, &state->buffered_task_handle, TASK_BUFFERED_CORE);
+    buffered_audio_task,
+    "buff_audio",
+    TASK_BUFFERED_STACK,
+    stream,
+    TASK_BUFFERED_PRIORITY,
+    &state->buffered_task_handle,
+    TASK_BUFFERED_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);
@@ -186,11 +167,9 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   return ESP_OK;
 }
 
-static void buffered_stop(audio_stream_t *stream) {
-  audio_receiver_state_t *state = audio_stream_state(stream);
-  if (!stream->running) {
-    return;
-  }
+static void buffered_stop(audio_stream_t* stream) {
+  audio_receiver_state_t* state = audio_stream_state(stream);
+  if (!stream->running) { return; }
 
   stream->running = false;
 
@@ -217,29 +196,25 @@ static void buffered_stop(audio_stream_t *stream) {
   state->buffered_port = 0;
 }
 
-static uint16_t buffered_get_port(audio_stream_t *stream) {
-  audio_receiver_state_t *state = audio_stream_state(stream);
+static uint16_t buffered_get_port(audio_stream_t* stream) {
+  audio_receiver_state_t* state = audio_stream_state(stream);
   return state->buffered_port;
 }
 
-static bool buffered_is_running(audio_stream_t *stream) {
-  return stream->running;
-}
+static bool buffered_is_running(audio_stream_t* stream) { return stream->running; }
 
-static void buffered_destroy(audio_stream_t *stream) {
-  if (!stream) {
-    return;
-  }
+static void buffered_destroy(audio_stream_t* stream) {
+  if (!stream) { return; }
 
   buffered_stop(stream);
   free(stream);
 }
 
 const audio_stream_ops_t audio_stream_buffered_ops = {
-    .start = buffered_start,
-    .stop = buffered_stop,
-    .receive_packet = NULL,
-    .decrypt_payload = NULL,
-    .get_port = buffered_get_port,
-    .is_running = buffered_is_running,
-    .destroy = buffered_destroy};
+  .start = buffered_start,
+  .stop = buffered_stop,
+  .receive_packet = NULL,
+  .decrypt_payload = NULL,
+  .get_port = buffered_get_port,
+  .is_running = buffered_is_running,
+  .destroy = buffered_destroy};

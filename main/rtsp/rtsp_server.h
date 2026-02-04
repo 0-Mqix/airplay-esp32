@@ -1,7 +1,8 @@
 #pragma once
 
-#include "esp_err.h"
 #include <stdint.h>
+
+#include "esp_err.h"
 
 /**
  * Start the AirPlay RTSP server on port 7000

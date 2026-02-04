@@ -8,11 +8,9 @@
 #include "config.h"
 #include "settings.h"
 
-rtsp_conn_t *rtsp_conn_create(void) {
-  rtsp_conn_t *conn = calloc(1, sizeof(rtsp_conn_t));
-  if (!conn) {
-    return NULL;
-  }
+rtsp_conn_t* rtsp_conn_create(void) {
+  rtsp_conn_t* conn = calloc(1, sizeof(rtsp_conn_t));
+  if (!conn) { return NULL; }
 
   // Load saved volume or use default
   float saved_volume;
@@ -20,9 +18,7 @@ rtsp_conn_t *rtsp_conn_create(void) {
     conn->volume_db = saved_volume;
     // Clamp to max volume to protect speakers
     float clamped = saved_volume;
-    if (clamped > CONFIG_MAX_VOLUME_DB) {
-      clamped = CONFIG_MAX_VOLUME_DB;
-    }
+    if (clamped > CONFIG_MAX_VOLUME_DB) { clamped = CONFIG_MAX_VOLUME_DB; }
     // Apply volume curve
     if (clamped <= -30.0f) {
       conn->volume_q15 = 0;
@@ -47,10 +43,8 @@ rtsp_conn_t *rtsp_conn_create(void) {
   return conn;
 }
 
-void rtsp_conn_free(rtsp_conn_t *conn) {
-  if (!conn) {
-    return;
-  }
+void rtsp_conn_free(rtsp_conn_t* conn) {
+  if (!conn) { return; }
 
   // Cleanup any resources
   rtsp_conn_cleanup(conn);
@@ -64,10 +58,8 @@ void rtsp_conn_free(rtsp_conn_t *conn) {
   free(conn);
 }
 
-void rtsp_conn_reset_stream(rtsp_conn_t *conn) {
-  if (!conn) {
-    return;
-  }
+void rtsp_conn_reset_stream(rtsp_conn_t* conn) {
+  if (!conn) { return; }
 
   // Reset stream state but keep session alive
   conn->stream_active = false;
@@ -77,10 +69,8 @@ void rtsp_conn_reset_stream(rtsp_conn_t *conn) {
   // Don't clear: data_port, control_port, timing_port, event_port
 }
 
-void rtsp_conn_cleanup(rtsp_conn_t *conn) {
-  if (!conn) {
-    return;
-  }
+void rtsp_conn_cleanup(rtsp_conn_t* conn) {
+  if (!conn) { return; }
 
   // Stop audio receiver
   audio_receiver_stop();
@@ -112,18 +102,14 @@ void rtsp_conn_cleanup(rtsp_conn_t *conn) {
   conn->encrypted_mode = false;
 }
 
-void rtsp_conn_set_volume(rtsp_conn_t *conn, float volume_db) {
-  if (!conn) {
-    return;
-  }
+void rtsp_conn_set_volume(rtsp_conn_t* conn, float volume_db) {
+  if (!conn) { return; }
 
   conn->volume_db = volume_db;
 
   // Clamp to max volume to protect speakers
   float clamped_db = volume_db;
-  if (clamped_db > CONFIG_MAX_VOLUME_DB) {
-    clamped_db = CONFIG_MAX_VOLUME_DB;
-  }
+  if (clamped_db > CONFIG_MAX_VOLUME_DB) { clamped_db = CONFIG_MAX_VOLUME_DB; }
 
   // AirPlay volume: 0 dB = max, -30 dB = mute
   // Use squared curve for better perceptual control
@@ -142,7 +128,7 @@ void rtsp_conn_set_volume(rtsp_conn_t *conn, float volume_db) {
   settings_set_volume(volume_db);
 }
 
-int32_t rtsp_conn_get_volume_q15(rtsp_conn_t *conn) {
+int32_t rtsp_conn_get_volume_q15(rtsp_conn_t* conn) {
   if (!conn) {
     return 32768; // Default full volume
   }

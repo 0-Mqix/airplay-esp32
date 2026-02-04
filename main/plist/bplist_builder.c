@@ -3,11 +3,8 @@
 #include "audio_stream.h"
 #include "plist.h"
 
-size_t bplist_build_initial_setup(uint8_t *out, size_t capacity,
-                                  uint16_t event_port) {
-  if (capacity < 100) {
-    return 0;
-  }
+size_t bplist_build_initial_setup(uint8_t* out, size_t capacity, uint16_t event_port) {
+  if (capacity < 100) { return 0; }
 
   size_t pos = 0;
   memcpy(out + pos, "bplist00", 8);
@@ -44,9 +41,7 @@ size_t bplist_build_initial_setup(uint8_t *out, size_t capacity,
 
   size_t offset_table_offset = pos;
   for (size_t i = 0; i < obj; i++) {
-    if (offsets[i] > 0xFF) {
-      return 0;
-    }
+    if (offsets[i] > 0xFF) { return 0; }
     out[pos++] = (uint8_t)offsets[i];
   }
 
@@ -55,31 +50,21 @@ size_t bplist_build_initial_setup(uint8_t *out, size_t capacity,
   out[pos++] = 1;
   out[pos++] = 1;
 
-  for (int i = 0; i < 7; i++) {
-    out[pos++] = 0;
-  }
+  for (int i = 0; i < 7; i++) { out[pos++] = 0; }
   out[pos++] = (uint8_t)obj;
 
-  for (int i = 0; i < 7; i++) {
-    out[pos++] = 0;
-  }
+  for (int i = 0; i < 7; i++) { out[pos++] = 0; }
   out[pos++] = 4;
 
-  for (int i = 0; i < 7; i++) {
-    out[pos++] = 0;
-  }
+  for (int i = 0; i < 7; i++) { out[pos++] = 0; }
   out[pos++] = (uint8_t)offset_table_offset;
 
   return pos;
 }
 
-size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
-                                 int64_t stream_type, uint16_t data_port,
-                                 uint16_t control_port,
-                                 uint32_t audio_buffer_size) {
-  if (capacity < 200) {
-    return 0;
-  }
+size_t
+bplist_build_stream_setup(uint8_t* out, size_t capacity, int64_t stream_type, uint16_t data_port, uint16_t control_port, uint32_t audio_buffer_size) {
+  if (capacity < 200) { return 0; }
 
   size_t pos = 0;
   memcpy(out + pos, "bplist00", 8);
@@ -168,9 +153,7 @@ size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
 
   size_t offset_table_offset = pos;
   for (size_t i = 0; i < obj; i++) {
-    if (offsets[i] > 0xFF) {
-      return 0;
-    }
+    if (offsets[i] > 0xFF) { return 0; }
     out[pos++] = (uint8_t)offsets[i];
   }
 
@@ -179,19 +162,13 @@ size_t bplist_build_stream_setup(uint8_t *out, size_t capacity,
   out[pos++] = 1;
   out[pos++] = 1;
 
-  for (int i = 0; i < 7; i++) {
-    out[pos++] = 0;
-  }
+  for (int i = 0; i < 7; i++) { out[pos++] = 0; }
   out[pos++] = (uint8_t)obj;
 
-  for (int i = 0; i < 7; i++) {
-    out[pos++] = 0;
-  }
+  for (int i = 0; i < 7; i++) { out[pos++] = 0; }
   out[pos++] = 11;
 
-  for (int i = 0; i < 7; i++) {
-    out[pos++] = 0;
-  }
+  for (int i = 0; i < 7; i++) { out[pos++] = 0; }
   out[pos++] = (uint8_t)offset_table_offset;
 
   return pos;

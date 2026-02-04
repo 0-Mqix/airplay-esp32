@@ -1,8 +1,9 @@
 #pragma once
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 
 /**
@@ -24,22 +25,22 @@ typedef struct srp_session {
   uint8_t server_secret[SRP_PRIME_BYTES];     // b
   uint8_t client_public_key[SRP_PRIME_BYTES]; // A
   uint8_t session_key[SRP_SESSION_KEY_BYTES]; // K
-  size_t session_key_len;
+  size_t  session_key_len;
   uint8_t proof_m1[SRP_SESSION_KEY_BYTES]; // Client proof
   uint8_t proof_m2[SRP_SESSION_KEY_BYTES]; // Server proof
-  int state;
-  bool verified;
+  int     state;
+  bool    verified;
 } srp_session_t;
 
 /**
  * Create a new SRP session
  */
-srp_session_t *srp_session_create(void);
+srp_session_t* srp_session_create(void);
 
 /**
  * Free an SRP session
  */
-void srp_session_free(srp_session_t *session);
+void srp_session_free(srp_session_t* session);
 
 /**
  * Start SRP session (generate salt and server public key B)
@@ -50,19 +51,18 @@ void srp_session_free(srp_session_t *session);
  * @param password Password (typically "3939" for transient)
  * @return ESP_OK on success
  */
-esp_err_t srp_start(srp_session_t *session, const char *username,
-                    const char *password);
+esp_err_t srp_start(srp_session_t* session, const char* username, const char* password);
 
 /**
  * Get salt for M2 response
  */
-const uint8_t *srp_get_salt(srp_session_t *session);
+const uint8_t* srp_get_salt(srp_session_t* session);
 
 /**
  * Get server public key B for M2 response
  * @param len Output: length of public key
  */
-const uint8_t *srp_get_public_key(srp_session_t *session, size_t *len);
+const uint8_t* srp_get_public_key(srp_session_t* session, size_t* len);
 
 /**
  * Process client's public key A and proof M1 from M3
@@ -75,18 +75,16 @@ const uint8_t *srp_get_public_key(srp_session_t *session, size_t *len);
  * @param proof_len Length of proof
  * @return ESP_OK if verification succeeds
  */
-esp_err_t srp_verify_client(srp_session_t *session,
-                            const uint8_t *client_public_key,
-                            size_t client_pk_len, const uint8_t *client_proof,
-                            size_t proof_len);
+esp_err_t
+srp_verify_client(srp_session_t* session, const uint8_t* client_public_key, size_t client_pk_len, const uint8_t* client_proof, size_t proof_len);
 
 /**
  * Get server proof M2 for M4 response
  */
-const uint8_t *srp_get_proof(srp_session_t *session);
+const uint8_t* srp_get_proof(srp_session_t* session);
 
 /**
  * Get session key K after successful verification
  * This key is used to encrypt M5/M6 messages
  */
-const uint8_t *srp_get_session_key(srp_session_t *session, size_t *len);
+const uint8_t* srp_get_session_key(srp_session_t* session, size_t* len);

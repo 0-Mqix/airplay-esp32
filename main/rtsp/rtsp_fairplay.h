@@ -21,5 +21,4 @@
  * @param response_len Output: length of response
  * @return 0 on success, -1 on error
  */
-int rtsp_fairplay_handle(const uint8_t *body, size_t body_len,
-                         uint8_t **response, size_t *response_len);
+int rtsp_fairplay_handle(const uint8_t* body, size_t body_len, uint8_t** response, size_t* response_len);

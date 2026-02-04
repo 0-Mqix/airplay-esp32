@@ -1,5 +1,8 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
@@ -7,17 +10,12 @@
 #include "settings.h"
 #include "wifi.h"
 
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
-static const char *TAG = "main";
+static const char* TAG = "main";
 
 void app_main(void) {
   // Initialize NVS (needed for WiFi driver)
   esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-      ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
     ret = nvs_flash_init();
   }
@@ -41,7 +39,5 @@ void app_main(void) {
   wifi_get_ip_str(ip_str, sizeof(ip_str));
   ESP_LOGI(TAG, "AirPlay ready at %s", ip_str);
 
-  while (1) {
-    vTaskDelay(pdMS_TO_TICKS(10000));
-  }
+  while (1) { vTaskDelay(pdMS_TO_TICKS(10000)); }
 }

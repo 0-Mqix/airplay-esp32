@@ -12,71 +12,53 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include "rtsp_conn.h"
 #include "rtsp_crypto.h"
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
 
-static const char *TAG = "rtsp_server";
+static const char* TAG = "rtsp_server";
 
 #define RTSP_PORT           7000
 #define RTSP_BUFFER_INITIAL 4096
 #define RTSP_BUFFER_LARGE   (256 * 1024)
 
-static int server_socket = -1;
+static int          server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
-static bool server_running = false;
+static bool         server_running = false;
 
 // Current connection (one client at a time)
-static rtsp_conn_t *current_conn = NULL;
+static rtsp_conn_t* current_conn = NULL;
 
 // Public API for volume control
 void airplay_set_volume(float volume_db) {
-  if (current_conn) {
-    rtsp_conn_set_volume(current_conn, volume_db);
-  }
+  if (current_conn) { rtsp_conn_set_volume(current_conn, volume_db); }
 }
 
 int32_t airplay_get_volume_q15(void) {
-  if (current_conn) {
-    return rtsp_conn_get_volume_q15(current_conn);
-  }
+  if (current_conn) { return rtsp_conn_get_volume_q15(current_conn); }
   return 32768; // Default full volume
 }
 
 // Helper to grow buffer using PSRAM if possible
-static uint8_t *grow_buffer(uint8_t *old_buf, size_t old_size, size_t new_size,
-                            size_t data_len) {
+static uint8_t* grow_buffer(uint8_t* old_buf, size_t old_size, size_t new_size, size_t data_len) {
   (void)old_size;
-  uint8_t *new_buf =
-      heap_caps_malloc(new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!new_buf) {
-    new_buf = malloc(new_size);
-  }
-  if (!new_buf) {
-    return NULL;
-  }
-  if (old_buf && data_len > 0) {
-    memcpy(new_buf, old_buf, data_len);
-  }
-  if (old_buf) {
-    free(old_buf);
-  }
+  uint8_t* new_buf = heap_caps_malloc(new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!new_buf) { new_buf = malloc(new_size); }
+  if (!new_buf) { return NULL; }
+  if (old_buf && data_len > 0) { memcpy(new_buf, old_buf, data_len); }
+  if (old_buf) { free(old_buf); }
   return new_buf;
 }
 
 // Process buffered RTSP requests
-static void process_rtsp_buffer(int client_socket, rtsp_conn_t *conn,
-                                uint8_t *buffer, size_t *buf_len) {
+static void process_rtsp_buffer(int client_socket, rtsp_conn_t* conn, uint8_t* buffer, size_t* buf_len) {
   while (*buf_len > 0) {
-    const uint8_t *header_end = rtsp_find_header_end(buffer, *buf_len);
-    if (!header_end) {
-      break;
-    }
+    const uint8_t* header_end = rtsp_find_header_end(buffer, *buf_len);
+    if (!header_end) { break; }
 
     size_t header_len = (size_t)(header_end - buffer) + 4;
-    char *header_str = malloc(header_len + 1);
+    char*  header_str = malloc(header_len + 1);
     if (!header_str) {
       ESP_LOGE(TAG, "Failed to allocate header buffer");
       *buf_len = 0;
@@ -86,9 +68,7 @@ static void process_rtsp_buffer(int client_socket, rtsp_conn_t *conn,
     header_str[header_len] = '\0';
 
     int content_len = rtsp_parse_content_length(header_str);
-    if (content_len < 0) {
-      content_len = 0;
-    }
+    if (content_len < 0) { content_len = 0; }
 
     size_t total_len = header_len + (size_t)content_len;
     if (total_len > RTSP_BUFFER_LARGE) {
@@ -108,16 +88,14 @@ static void process_rtsp_buffer(int client_socket, rtsp_conn_t *conn,
 
     free(header_str);
 
-    if (*buf_len > total_len) {
-      memmove(buffer, buffer + total_len, *buf_len - total_len);
-    }
+    if (*buf_len > total_len) { memmove(buffer, buffer + total_len, *buf_len - total_len); }
     *buf_len -= total_len;
   }
 }
 
 static void handle_client(int client_socket) {
   // Create connection state
-  rtsp_conn_t *conn = rtsp_conn_create();
+  rtsp_conn_t* conn = rtsp_conn_create();
   if (!conn) {
     ESP_LOGE(TAG, "Failed to create connection state");
     close(client_socket);
@@ -126,8 +104,8 @@ static void handle_client(int client_socket) {
   current_conn = conn;
 
   // Allocate initial buffer
-  size_t buf_capacity = RTSP_BUFFER_INITIAL;
-  uint8_t *buffer = malloc(buf_capacity);
+  size_t   buf_capacity = RTSP_BUFFER_INITIAL;
+  uint8_t* buffer = malloc(buf_capacity);
   if (!buffer) {
     ESP_LOGE(TAG, "Failed to allocate request buffer");
     rtsp_conn_free(conn);
@@ -144,15 +122,12 @@ static void handle_client(int client_socket) {
       while (server_running && conn->encrypted_mode) {
         // Grow buffer if needed
         if (buf_len >= buf_capacity - 1024) {
-          size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE)
-                                    ? RTSP_BUFFER_LARGE
-                                    : buf_capacity * 2;
+          size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE) ? RTSP_BUFFER_LARGE : buf_capacity * 2;
           if (new_capacity > RTSP_BUFFER_LARGE) {
             ESP_LOGE(TAG, "RTSP buffer overflow (%zu bytes)", buf_len);
             goto cleanup;
           }
-          uint8_t *new_buf =
-              grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
+          uint8_t* new_buf = grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
           if (!new_buf) {
             ESP_LOGE(TAG, "Failed to grow RTSP buffer");
             goto cleanup;
@@ -161,11 +136,8 @@ static void handle_client(int client_socket) {
           buf_capacity = new_capacity;
         }
 
-        int block_len = rtsp_crypto_read_block(
-            client_socket, conn, buffer + buf_len, buf_capacity - buf_len);
-        if (block_len <= 0) {
-          goto cleanup;
-        }
+        int block_len = rtsp_crypto_read_block(client_socket, conn, buffer + buf_len, buf_capacity - buf_len);
+        if (block_len <= 0) { goto cleanup; }
 
         buf_len += (size_t)block_len;
         process_rtsp_buffer(client_socket, conn, buffer, &buf_len);
@@ -175,15 +147,12 @@ static void handle_client(int client_socket) {
 
     // Plain-text mode (before encryption)
     if (buf_len >= buf_capacity - 1024) {
-      size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE)
-                                ? RTSP_BUFFER_LARGE
-                                : buf_capacity * 2;
+      size_t new_capacity = (buf_capacity < RTSP_BUFFER_LARGE) ? RTSP_BUFFER_LARGE : buf_capacity * 2;
       if (new_capacity > RTSP_BUFFER_LARGE) {
         ESP_LOGE(TAG, "RTSP buffer overflow (%zu bytes)", buf_len);
         break;
       }
-      uint8_t *new_buf =
-          grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
+      uint8_t* new_buf = grow_buffer(buffer, buf_capacity, new_capacity, buf_len);
       if (!new_buf) {
         ESP_LOGE(TAG, "Failed to grow RTSP buffer");
         break;
@@ -192,12 +161,9 @@ static void handle_client(int client_socket) {
       buf_capacity = new_capacity;
     }
 
-    int recv_len =
-        recv(client_socket, buffer + buf_len, buf_capacity - buf_len, 0);
+    int recv_len = recv(client_socket, buffer + buf_len, buf_capacity - buf_len, 0);
     if (recv_len <= 0) {
-      if (recv_len < 0) {
-        ESP_LOGE(TAG, "recv error: %d", errno);
-      }
+      if (recv_len < 0) { ESP_LOGE(TAG, "recv error: %d", errno); }
       break;
     }
     buf_len += (size_t)recv_len;
@@ -226,11 +192,11 @@ cleanup:
   current_conn = NULL;
 }
 
-static void server_task(void *pvParameters) {
+static void server_task(void* pvParameters) {
   (void)pvParameters;
 
   struct sockaddr_in server_addr, client_addr;
-  socklen_t client_addr_len = sizeof(client_addr);
+  socklen_t          client_addr_len = sizeof(client_addr);
 
   server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (server_socket < 0) {
@@ -247,8 +213,7 @@ static void server_task(void *pvParameters) {
   server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   server_addr.sin_port = htons(RTSP_PORT);
 
-  if (bind(server_socket, (struct sockaddr *)&server_addr,
-           sizeof(server_addr)) < 0) {
+  if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
     ESP_LOGE(TAG, "Failed to bind socket: %d", errno);
     close(server_socket);
     server_socket = -1;
@@ -268,12 +233,9 @@ static void server_task(void *pvParameters) {
   server_running = true;
 
   while (server_running) {
-    int client_socket = accept(server_socket, (struct sockaddr *)&client_addr,
-                               &client_addr_len);
+    int client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_addr_len);
     if (client_socket < 0) {
-      if (server_running) {
-        ESP_LOGE(TAG, "Failed to accept: %d", errno);
-      }
+      if (server_running) { ESP_LOGE(TAG, "Failed to accept: %d", errno); }
       continue;
     }
 
@@ -296,8 +258,13 @@ esp_err_t rtsp_server_start(void) {
   }
 
   BaseType_t ret = xTaskCreatePinnedToCore(
-      server_task, "rtsp_server", TASK_RTSP_SERVER_STACK, NULL,
-      TASK_RTSP_SERVER_PRIORITY, &server_task_handle, TASK_RTSP_SERVER_CORE);
+    server_task,
+    "rtsp_server",
+    TASK_RTSP_SERVER_STACK,
+    NULL,
+    TASK_RTSP_SERVER_PRIORITY,
+    &server_task_handle,
+    TASK_RTSP_SERVER_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create server task");
     return ESP_FAIL;

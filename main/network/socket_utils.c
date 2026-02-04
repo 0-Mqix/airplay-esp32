@@ -8,10 +8,9 @@
 
 #include "esp_log.h"
 
-static const char *TAG = "sock_utils";
+static const char* TAG = "sock_utils";
 
-int socket_utils_bind_udp(uint16_t port, int recv_timeout_sec, int recvbuf_size,
-                          uint16_t *bound_port) {
+int socket_utils_bind_udp(uint16_t port, int recv_timeout_sec, int recvbuf_size, uint16_t* bound_port) {
   int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (sock < 0) {
     ESP_LOGE(TAG, "Failed to create UDP socket");
@@ -23,17 +22,14 @@ int socket_utils_bind_udp(uint16_t port, int recv_timeout_sec, int recvbuf_size,
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   }
 
-  if (recvbuf_size > 0) {
-    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recvbuf_size,
-               sizeof(recvbuf_size));
-  }
+  if (recvbuf_size > 0) { setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recvbuf_size, sizeof(recvbuf_size)); }
 
   struct sockaddr_in addr = {0};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
 
-  if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+  if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
     ESP_LOGE(TAG, "Failed to bind UDP socket to port %u: %d", port, errno);
     close(sock);
     return -1;
@@ -41,15 +37,14 @@ int socket_utils_bind_udp(uint16_t port, int recv_timeout_sec, int recvbuf_size,
 
   if (bound_port) {
     socklen_t addr_len = sizeof(addr);
-    getsockname(sock, (struct sockaddr *)&addr, &addr_len);
+    getsockname(sock, (struct sockaddr*)&addr, &addr_len);
     *bound_port = ntohs(addr.sin_port);
   }
 
   return sock;
 }
 
-int socket_utils_bind_tcp_listener(uint16_t port, int backlog, bool nonblocking,
-                                   uint16_t *bound_port) {
+int socket_utils_bind_tcp_listener(uint16_t port, int backlog, bool nonblocking, uint16_t* bound_port) {
   int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sock < 0) {
     ESP_LOGE(TAG, "Failed to create TCP socket");
@@ -64,7 +59,7 @@ int socket_utils_bind_tcp_listener(uint16_t port, int backlog, bool nonblocking,
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
 
-  if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+  if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
     ESP_LOGE(TAG, "Failed to bind TCP socket to port %u: %d", port, errno);
     close(sock);
     return -1;
@@ -83,7 +78,7 @@ int socket_utils_bind_tcp_listener(uint16_t port, int backlog, bool nonblocking,
 
   if (bound_port) {
     socklen_t addr_len = sizeof(addr);
-    getsockname(sock, (struct sockaddr *)&addr, &addr_len);
+    getsockname(sock, (struct sockaddr*)&addr, &addr_len);
     *bound_port = ntohs(addr.sin_port);
   }
 

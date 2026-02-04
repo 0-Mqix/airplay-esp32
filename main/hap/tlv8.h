@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 /**
  * TLV8 encoder/decoder for HAP protocol
@@ -37,37 +37,36 @@
 #define PAIR_VERIFY_STATE_M4 0x04
 
 typedef struct {
-  uint8_t *buffer;
-  size_t size;
-  size_t capacity;
+  uint8_t* buffer;
+  size_t   size;
+  size_t   capacity;
 } tlv8_encoder_t;
 
 typedef struct {
-  const uint8_t *data;
-  size_t len;
+  const uint8_t* data;
+  size_t         len;
 } tlv8_value_t;
 
 /**
  * Initialize TLV8 encoder
  */
-void tlv8_encoder_init(tlv8_encoder_t *enc, uint8_t *buffer, size_t capacity);
+void tlv8_encoder_init(tlv8_encoder_t* enc, uint8_t* buffer, size_t capacity);
 
 /**
  * Add a TLV to the encoder
  * Handles values > 255 bytes by splitting into multiple TLVs
  */
-bool tlv8_encode(tlv8_encoder_t *enc, uint8_t type, const uint8_t *value,
-                 size_t len);
+bool tlv8_encode(tlv8_encoder_t* enc, uint8_t type, const uint8_t* value, size_t len);
 
 /**
  * Add a single byte TLV
  */
-bool tlv8_encode_byte(tlv8_encoder_t *enc, uint8_t type, uint8_t value);
+bool tlv8_encode_byte(tlv8_encoder_t* enc, uint8_t type, uint8_t value);
 
 /**
  * Get encoded size
  */
-size_t tlv8_encoder_size(const tlv8_encoder_t *enc);
+size_t tlv8_encoder_size(const tlv8_encoder_t* enc);
 
 /**
  * Find a TLV by type in encoded data
@@ -75,8 +74,7 @@ size_t tlv8_encoder_size(const tlv8_encoder_t *enc);
  * For split TLVs, only returns first chunk (use tlv8_decode_concat for full
  * value)
  */
-const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type,
-                         size_t *value_len);
+const uint8_t* tlv8_find(const uint8_t* data, size_t data_len, uint8_t type, size_t* value_len);
 
 /**
  * Decode and concatenate split TLVs of same type
@@ -88,6 +86,4 @@ const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type,
  * @param out_len Actual length of decoded value
  * @return true if found, false otherwise
  */
-bool tlv8_decode_concat(const uint8_t *data, size_t data_len, uint8_t type,
-                        uint8_t *out_buffer, size_t out_capacity,
-                        size_t *out_len);
+bool tlv8_decode_concat(const uint8_t* data, size_t data_len, uint8_t type, uint8_t* out_buffer, size_t out_capacity, size_t* out_len);

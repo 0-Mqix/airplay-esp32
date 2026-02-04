@@ -3,17 +3,17 @@
 #include "esp_log.h"
 #include "nvs.h"
 
-static const char *TAG = "settings";
+static const char* TAG = "settings";
 
 #define NVS_NAMESPACE  "airplay"
 #define NVS_KEY_VOLUME "volume_db"
 
 static float g_volume_db = 0.0f;
-static bool g_volume_loaded = false;
+static bool  g_volume_loaded = false;
 
 esp_err_t settings_init(void) {
   nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  esp_err_t    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
   if (err == ESP_OK) {
     int32_t vol_fixed;
     err = nvs_get_i32(nvs, NVS_KEY_VOLUME, &vol_fixed);
@@ -28,26 +28,20 @@ esp_err_t settings_init(void) {
   return ESP_OK;
 }
 
-esp_err_t settings_get_volume(float *volume_db) {
-  if (!volume_db) {
-    return ESP_ERR_INVALID_ARG;
-  }
+esp_err_t settings_get_volume(float* volume_db) {
+  if (!volume_db) { return ESP_ERR_INVALID_ARG; }
 
-  if (!g_volume_loaded) {
-    return ESP_ERR_NOT_FOUND;
-  }
+  if (!g_volume_loaded) { return ESP_ERR_NOT_FOUND; }
 
   *volume_db = g_volume_db;
   return ESP_OK;
 }
 
 esp_err_t settings_set_volume(float volume_db) {
-  if (g_volume_loaded && volume_db == g_volume_db) {
-    return ESP_OK;
-  }
+  if (g_volume_loaded && volume_db == g_volume_db) { return ESP_OK; }
 
   nvs_handle_t nvs;
-  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  esp_err_t    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
     return err;
@@ -55,9 +49,7 @@ esp_err_t settings_set_volume(float volume_db) {
 
   int32_t vol_fixed = (int32_t)(volume_db * 100.0f);
   err = nvs_set_i32(nvs, NVS_KEY_VOLUME, vol_fixed);
-  if (err == ESP_OK) {
-    err = nvs_commit(nvs);
-  }
+  if (err == ESP_OK) { err = nvs_commit(nvs); }
 
   nvs_close(nvs);
 

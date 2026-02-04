@@ -1,26 +1,22 @@
-#include <string.h>
 #include "tlv8.h"
 
-void tlv8_encoder_init(tlv8_encoder_t *enc, uint8_t *buffer, size_t capacity) {
+#include <string.h>
+
+void tlv8_encoder_init(tlv8_encoder_t* enc, uint8_t* buffer, size_t capacity) {
   enc->buffer = buffer;
   enc->size = 0;
   enc->capacity = capacity;
 }
 
-bool tlv8_encode(tlv8_encoder_t *enc, uint8_t type, const uint8_t *value,
-                 size_t len) {
+bool tlv8_encode(tlv8_encoder_t* enc, uint8_t type, const uint8_t* value, size_t len) {
   size_t offset = 0;
 
   while (offset < len || (offset == 0 && len == 0)) {
     size_t chunk_len = len - offset;
-    if (chunk_len > 255) {
-      chunk_len = 255;
-    }
+    if (chunk_len > 255) { chunk_len = 255; }
 
     // Check if we have space
-    if (enc->size + 2 + chunk_len > enc->capacity) {
-      return false;
-    }
+    if (enc->size + 2 + chunk_len > enc->capacity) { return false; }
 
     enc->buffer[enc->size++] = type;
     enc->buffer[enc->size++] = (uint8_t)chunk_len;
@@ -33,24 +29,17 @@ bool tlv8_encode(tlv8_encoder_t *enc, uint8_t type, const uint8_t *value,
     offset += chunk_len;
 
     // For zero-length values, only write one TLV
-    if (len == 0) {
-      break;
-    }
+    if (len == 0) { break; }
   }
 
   return true;
 }
 
-bool tlv8_encode_byte(tlv8_encoder_t *enc, uint8_t type, uint8_t value) {
-  return tlv8_encode(enc, type, &value, 1);
-}
+bool tlv8_encode_byte(tlv8_encoder_t* enc, uint8_t type, uint8_t value) { return tlv8_encode(enc, type, &value, 1); }
 
-size_t tlv8_encoder_size(const tlv8_encoder_t *enc) {
-  return enc->size;
-}
+size_t tlv8_encoder_size(const tlv8_encoder_t* enc) { return enc->size; }
 
-const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type,
-                         size_t *value_len) {
+const uint8_t* tlv8_find(const uint8_t* data, size_t data_len, uint8_t type, size_t* value_len) {
   size_t offset = 0;
 
   while (offset + 2 <= data_len) {
@@ -73,13 +62,11 @@ const uint8_t *tlv8_find(const uint8_t *data, size_t data_len, uint8_t type,
   return NULL;
 }
 
-bool tlv8_decode_concat(const uint8_t *data, size_t data_len, uint8_t type,
-                        uint8_t *out_buffer, size_t out_capacity,
-                        size_t *out_len) {
+bool tlv8_decode_concat(const uint8_t* data, size_t data_len, uint8_t type, uint8_t* out_buffer, size_t out_capacity, size_t* out_len) {
   size_t offset = 0;
   size_t out_offset = 0;
-  bool found = false;
-  bool in_sequence = false;
+  bool   found = false;
+  bool   in_sequence = false;
 
   while (offset + 2 <= data_len) {
     uint8_t t = data[offset];
