@@ -48,7 +48,9 @@ esp_err_t settings_set_volume(float volume_db) {
   }
 
   int32_t vol_fixed = (int32_t)(volume_db * 100.0f);
+
   err = nvs_set_i32(nvs, NVS_KEY_VOLUME, vol_fixed);
+
   if (err == ESP_OK) { err = nvs_commit(nvs); }
 
   nvs_close(nvs);
