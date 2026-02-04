@@ -17,8 +17,8 @@ static bool s_wifi_initialized = false;
 // AP settings
 #define AP_SSID       CONFIG_DEVICE_NAME
 #define AP_PASS       CONFIG_WIFI_PASSWORD
-#define AP_CHANNEL    6
-#define AP_MAX_CONN   4
+#define AP_CHANNEL    CONFIG_WIFI_CHANNEL
+#define AP_MAX_CONN   CONFIG_WIFI_MAX_CONN
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
@@ -78,7 +78,14 @@ void wifi_init_ap(void) {
   esp_wifi_set_default_wifi_ap_handlers();
 
   wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
+  // Increase AMPDU TX/RX buffer for better streaming throughput
+  wifi_cfg.ampdu_tx_enable = 1;
+  wifi_cfg.ampdu_rx_enable = 1;
+  wifi_cfg.nvs_enable = 0;  // Don't use NVS - saves flash wear
   ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));
+
+  // Store config in RAM only
+  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
@@ -113,12 +120,13 @@ void wifi_init_ap(void) {
   // Disable power saving for low latency audio
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-  // TX power (8.5 dBm = 34 quarter-dBm units) - short range only
-  ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(34));
+  // TX power from config (quarter-dBm units)
+  ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(CONFIG_WIFI_TX_POWER));
 
   s_wifi_initialized = true;
 
-  ESP_LOGI(TAG, "WiFi AP started. SSID: %s, Channel: %d, BW: 40MHz", AP_SSID, AP_CHANNEL);
+  ESP_LOGI(TAG, "WiFi AP started. SSID: %s, Channel: %d, BW: 40MHz, TX: %.1f dBm",
+           AP_SSID, AP_CHANNEL, CONFIG_WIFI_TX_POWER / 4.0f);
 }
 
 void wifi_get_mac_str(char *mac_str, size_t len) {

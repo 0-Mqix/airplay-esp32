@@ -7,9 +7,18 @@
 #define CONFIG_WIFI_PASSWORD "tweaker!"
 
 // I2S pins for DAC (UM S3 Pro)
-#define CONFIG_I2S_BCK_PIN  3
-#define CONFIG_I2S_DATA_PIN 2
-#define CONFIG_I2S_LRCK_PIN 1
+#define CONFIG_I2S_BCK_PIN  14
+#define CONFIG_I2S_DATA_PIN 13
+#define CONFIG_I2S_LRCK_PIN 12
+
+// WiFi AP settings
+#define CONFIG_WIFI_CHANNEL    1      // Channel 1, 6, or 11 for least overlap
+#define CONFIG_WIFI_MAX_CONN   2      // Fewer clients = more bandwidth per client
+#define CONFIG_WIFI_TX_POWER   52     // 13 dBm (52 quarter-dBm) - safe for all modules
+
+// Maximum volume in dB (0 = full volume, -6 = half power, -12 = quarter power)
+// Use this to protect speakers from being too loud
+#define CONFIG_MAX_VOLUME_DB   -10
 
 // =============================================================================
 // Task Configuration
@@ -37,16 +46,6 @@
 #define TASK_BUFFERED_CORE     0
 #define TASK_BUFFERED_PRIORITY 17
 #define TASK_BUFFERED_STACK    4096
-
-// PTP clock - timing critical (higher priority for tighter sync)
-#define TASK_PTP_CORE     0
-#define TASK_PTP_PRIORITY 10
-#define TASK_PTP_STACK    4096
-
-// NTP clock - fallback timing
-#define TASK_NTP_CORE     0
-#define TASK_NTP_PRIORITY 5
-#define TASK_NTP_STACK    3072
 
 // RTSP server
 #define TASK_RTSP_SERVER_CORE     0
