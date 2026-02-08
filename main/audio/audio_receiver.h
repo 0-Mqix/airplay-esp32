@@ -104,9 +104,14 @@ size_t audio_receiver_read(int16_t* buffer, size_t samples);
 bool audio_receiver_has_data(void);
 
 /**
- * Flush audio buffer
+ * Flush audio buffer (increment generation, drain ring buffer)
  */
 void audio_receiver_flush(void);
+
+/**
+ * Get current audio generation counter (for stale data detection)
+ */
+uint32_t audio_receiver_get_generation(void);
 
 /**
  * Set advertised/target output latency in microseconds.

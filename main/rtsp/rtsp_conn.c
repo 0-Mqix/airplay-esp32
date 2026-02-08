@@ -5,36 +5,10 @@
 #include <unistd.h>
 
 #include "audio_receiver.h"
-#include "config.h"
-#include "settings.h"
 
 rtsp_conn_t* rtsp_conn_create(void) {
   rtsp_conn_t* conn = calloc(1, sizeof(rtsp_conn_t));
   if (!conn) { return NULL; }
-
-  // Load saved volume or use default
-  float saved_volume;
-  if (settings_get_volume(&saved_volume) == ESP_OK) {
-    conn->volume_db = saved_volume;
-    // Clamp to max volume to protect speakers
-    float clamped = saved_volume;
-    if (clamped > CONFIG_MAX_VOLUME_DB) { clamped = CONFIG_MAX_VOLUME_DB; }
-    // Apply volume curve
-    if (clamped <= -30.0f) {
-      conn->volume_q15 = 0;
-    } else if (clamped >= 0.0f) {
-      conn->volume_q15 = 32768;
-    } else {
-      float normalized = (clamped + 30.0f) / 30.0f;
-      conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
-    }
-  } else {
-    conn->volume_db = 0.0f;
-    // Apply max volume limit for default too
-    float clamped = CONFIG_MAX_VOLUME_DB > 0.0f ? 0.0f : CONFIG_MAX_VOLUME_DB;
-    float normalized = (clamped + 30.0f) / 30.0f;
-    conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
-  }
 
   conn->data_socket = -1;
   conn->control_socket = -1;
@@ -102,35 +76,3 @@ void rtsp_conn_cleanup(rtsp_conn_t* conn) {
   conn->encrypted_mode = false;
 }
 
-void rtsp_conn_set_volume(rtsp_conn_t* conn, float volume_db) {
-  if (!conn) { return; }
-
-  conn->volume_db = volume_db;
-
-  // Clamp to max volume to protect speakers
-  float clamped_db = volume_db;
-  if (clamped_db > CONFIG_MAX_VOLUME_DB) { clamped_db = CONFIG_MAX_VOLUME_DB; }
-
-  // AirPlay volume: 0 dB = max, -30 dB = mute
-  // Use squared curve for better perceptual control
-  if (clamped_db <= -30.0f) {
-    conn->volume_q15 = 0;
-  } else if (clamped_db >= 0.0f) {
-    conn->volume_q15 = 32768;
-  } else {
-    // Map -30..0 to 0..1, then square for perceptual curve
-    float normalized = (clamped_db + 30.0f) / 30.0f;
-    float curved = normalized * normalized;
-    conn->volume_q15 = (int32_t)(curved * 32768.0f);
-  }
-
-  // Persist to NVS
-  settings_set_volume(volume_db);
-}
-
-int32_t rtsp_conn_get_volume_q15(rtsp_conn_t* conn) {
-  if (!conn) {
-    return 32768; // Default full volume
-  }
-  return conn->volume_q15;
-}

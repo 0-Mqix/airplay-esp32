@@ -40,18 +40,6 @@ typedef struct {
 static client_slot_t clients[2] = {0}; // Current and old
 static int           current_slot = 0;
 
-// Public API for volume control
-void airplay_set_volume(float volume_db) {
-  client_slot_t* c = &clients[current_slot];
-  if (c->conn && !c->is_old) { rtsp_conn_set_volume(c->conn, volume_db); }
-}
-
-int32_t airplay_get_volume_q15(void) {
-  client_slot_t* c = &clients[current_slot];
-  if (c->conn && !c->is_old) { return rtsp_conn_get_volume_q15(c->conn); }
-  return 32768;
-}
-
 // Helper to grow buffer
 static uint8_t* grow_buffer(uint8_t* old_buf, size_t old_size, size_t new_size, size_t data_len) {
   (void)old_size;

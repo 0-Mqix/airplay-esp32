@@ -16,10 +16,6 @@
 #define CONFIG_WIFI_MAX_CONN 2  // Fewer clients = more bandwidth per client
 #define CONFIG_WIFI_TX_POWER 52 // 13 dBm (52 quarter-dBm) - safe for all modules
 
-// Maximum volume in dB (0 = full volume, -6 = half power, -12 = quarter power)
-// Use this to protect speakers from being too loud
-#define CONFIG_MAX_VOLUME_DB -10
-
 // =============================================================================
 // Task Configuration
 // =============================================================================

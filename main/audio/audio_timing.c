@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio_receiver.h"
 #include "freertos/FreeRTOS.h"
 
 #define DEFAULT_BUFFER_LATENCY_US 200000 // 200ms buffer
@@ -40,12 +41,6 @@ void audio_timing_init(audio_timing_t* timing, size_t pending_capacity) {
 void audio_timing_reset(audio_timing_t* timing) {
   if (!timing) { return; }
   timing->playout_started = false;
-}
-
-void audio_timing_set_flushing(audio_timing_t* timing, bool flushing) {
-  (void)timing;
-  (void)flushing;
-  // Not used in simple mode
 }
 
 void audio_timing_set_format(audio_timing_t* timing, const audio_format_t* format) {
@@ -99,32 +94,35 @@ audio_timing_read(audio_timing_t* timing, audio_buffer_t* buffer, const audio_st
   // Get frame from buffer
   size_t item_size = 0;
   void*  item = NULL;
-  if (!audio_buffer_take(buffer, &item, &item_size, pdMS_TO_TICKS(50))) {
+  if (!audio_buffer_take(buffer, &item, &item_size, 0)) {
     if (stats) { stats->buffer_underruns++; }
     return 0;
   }
 
-  if (item_size < sizeof(audio_frame_header_t)) {
-    audio_buffer_return(buffer, item);
-    return 0;
-  }
+  size_t result = 0;
+
+  if (item_size < sizeof(audio_frame_header_t)) { goto done; }
 
   audio_frame_header_t* hdr = (audio_frame_header_t*)item;
-  size_t                frame_samples = hdr->samples_per_channel;
-  size_t                channels = hdr->channels ? hdr->channels : format->channels;
-  int16_t*              pcm = (int16_t*)(hdr + 1);
 
-  if (frame_samples == 0 || channels == 0) {
-    audio_buffer_return(buffer, item);
-    return 0;
-  }
+  // Drop stale data from before a flush/seek
+  if (hdr->generation != audio_receiver_get_generation()) { goto done; }
+
+  size_t   frame_samples = hdr->samples_per_channel;
+  size_t   channels = hdr->channels ? hdr->channels : format->channels;
+  int16_t* pcm = (int16_t*)(hdr + 1);
+
+  if (frame_samples == 0 || channels == 0) { goto done; }
 
   if (frame_samples > samples) { frame_samples = samples; }
 
   // Copy PCM data to output
   memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));
-  audio_buffer_return(buffer, item);
 
   timing->playout_started = true;
-  return frame_samples;
+  result = frame_samples;
+
+done:
+  audio_buffer_return(buffer, item);
+  return result;
 }

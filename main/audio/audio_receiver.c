@@ -1,11 +1,11 @@
 #include "audio_receiver.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "audio_buffer.h"
 #include "audio_decoder.h"
-#include "audio_output.h"
 #include "audio_receiver_internal.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
@@ -19,14 +19,15 @@
 
 static const char* TAG = "audio_recv";
 
+static atomic_uint audio_generation = 0;
+
 static audio_receiver_state_t receiver = {0};
 
 static void audio_receiver_reset_stats(void) { memset(&receiver.stats, 0, sizeof(receiver.stats)); }
 
-static void audio_receiver_reset_blocks(void) {
-  receiver.blocks_read = 0;
-  receiver.blocks_read_in_sequence = 0;
-}
+uint32_t audio_receiver_get_generation(void) { return atomic_load(&audio_generation); }
+
+static void audio_receiver_reset_blocks(void) { receiver.blocks_read = 0; }
 
 static void audio_receiver_copy_stream_state(audio_stream_t* dst, const audio_stream_t* src) {
   if (!dst || !src) { return; }
@@ -136,10 +137,7 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
   audio_timing_set_anchor(&receiver.timing, &receiver.stream->format, clock_id, network_time_ns, rtp_time);
 }
 
-void audio_receiver_set_playing(bool playing) {
-  audio_timing_set_playing(&receiver.timing, playing);
-  if (!playing) { receiver.blocks_read_in_sequence = 0; }
-}
+void audio_receiver_set_playing(bool playing) { audio_timing_set_playing(&receiver.timing, playing); }
 
 void audio_receiver_reset_timing(void) { audio_timing_reset(&receiver.timing); }
 
@@ -254,11 +252,9 @@ bool audio_receiver_has_data(void) {
 }
 
 void audio_receiver_flush(void) {
-  // Simple flush: clear I2S and buffer, continue receiving
-  audio_output_flush();
+  atomic_fetch_add(&audio_generation, 1);
   audio_buffer_flush(&receiver.buffer);
   receiver.timing.playout_started = false;
-  receiver.blocks_read_in_sequence = 1;
 }
 
 uint16_t audio_receiver_get_buffered_port(void) { return receiver.buffered_port; }

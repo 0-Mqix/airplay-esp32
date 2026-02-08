@@ -9,9 +9,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "rtsp_server.h"
 #include "soc/soc_caps.h"
 
 #define TAG          "audio_output"
@@ -22,28 +20,12 @@
 // Read multiple frames at once to reduce task wake-ups and improve efficiency
 #define FRAME_SAMPLES 512
 
-// Flush notification bit for task notification
-#define FLUSH_NOTIFY_BIT (1 << 0)
-
 static i2s_chan_handle_t tx_handle;
 static TaskHandle_t      playback_task_handle = NULL;
-static SemaphoreHandle_t flush_complete_sem = NULL;
-static volatile bool     flush_pending = false;
 
-void audio_output_flush(void) {
-  if (!playback_task_handle) { return; }
-
-  // Signal flush and wait for playback task to acknowledge
-  flush_pending = true;
-  xTaskNotify(playback_task_handle, FLUSH_NOTIFY_BIT, eSetBits);
-
-  // Wait for flush to complete (max 100ms to avoid blocking forever)
-  if (flush_complete_sem) { xSemaphoreTake(flush_complete_sem, pdMS_TO_TICKS(100)); }
-}
-
+// Fixed -12 dB attenuation: >>2 = quarter power, ~0.53V RMS into AUX
 static void apply_volume(int16_t* buf, size_t n) {
-  int32_t vol = airplay_get_volume_q15();
-  for (size_t i = 0; i < n; i++) { buf[i] = (int16_t)(((int32_t)buf[i] * vol) >> 15); }
+  for (size_t i = 0; i < n; i++) { buf[i] >>= 2; }
 }
 
 static void playback_task(void* arg) {
@@ -59,34 +41,9 @@ static void playback_task(void* arg) {
     return;
   }
 
-  size_t   written;
-  uint32_t notify_value;
+  size_t written;
   while (true) {
-    // Check for flush notification (skip/seek) - wait briefly to yield CPU
-    if (xTaskNotifyWait(0, FLUSH_NOTIFY_BIT, &notify_value, pdMS_TO_TICKS(1)) == pdTRUE) {
-      if (notify_value & FLUSH_NOTIFY_BIT) {
-        // Disable I2S to immediately stop DMA and clear buffers
-        i2s_channel_disable(tx_handle);
-        // Small delay to ensure DMA is fully stopped
-        vTaskDelay(pdMS_TO_TICKS(5));
-        i2s_channel_enable(tx_handle);
-        // Clear the pending flag and signal completion
-        flush_pending = false;
-        if (flush_complete_sem) { xSemaphoreGive(flush_complete_sem); }
-        continue;
-      }
-    }
-
-    // Double-check flush wasn't requested between notification check and read
-    if (flush_pending) {
-      vTaskDelay(1);
-      continue;
-    }
-
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES);
-
-    // Check again after read - if flush happened, discard the data
-    if (flush_pending) { continue; }
 
     if (samples > 0) {
       apply_volume(pcm, samples * 2);
@@ -135,8 +92,5 @@ esp_err_t audio_output_init(void) {
 }
 
 void audio_output_start(void) {
-  // Create binary semaphore for flush synchronization
-  if (!flush_complete_sem) { flush_complete_sem = xSemaphoreCreateBinary(); }
-
   xTaskCreatePinnedToCore(playback_task, "audio_play", TASK_PLAYBACK_STACK, NULL, TASK_PLAYBACK_PRIORITY, &playback_task_handle, TASK_PLAYBACK_CORE);
 }

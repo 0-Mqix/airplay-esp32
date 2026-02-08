@@ -20,6 +20,7 @@ typedef struct __attribute__((packed)) {
   uint16_t samples_per_channel;
   uint8_t  channels;
   uint8_t  reserved;
+  uint32_t generation;
 } audio_frame_header_t;
 
 #define MAX_RING_BUFFER_FRAMES 5000

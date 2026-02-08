@@ -21,11 +21,6 @@ struct rtsp_conn {
   hap_session_t* hap_session;
   bool           encrypted_mode;
 
-  // Volume control: Q15 fixed-point (0-32768)
-  // 32768 = 0 dB (unity), 0 = mute
-  volatile int32_t volume_q15;
-  float            volume_db;
-
   // Audio streaming state
   bool     stream_active;
   bool     stream_paused;
@@ -74,16 +69,3 @@ void rtsp_conn_reset_stream(rtsp_conn_t* conn);
  */
 void rtsp_conn_cleanup(rtsp_conn_t* conn);
 
-/**
- * Set volume in dB (converts to Q15 internally)
- * @param conn Connection state
- * @param volume_db Volume in dB (0 = max, -30 = mute)
- */
-void rtsp_conn_set_volume(rtsp_conn_t* conn, float volume_db);
-
-/**
- * Get volume as Q15 scale factor
- * @param conn Connection state
- * @return Q15 fixed-point multiplier (0 = mute, 32768 = unity)
- */
-int32_t rtsp_conn_get_volume_q15(rtsp_conn_t* conn);

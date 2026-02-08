@@ -851,17 +851,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t* conn, const rtsp_reque
   const uint8_t* body = req->body;
   size_t         body_len = req->body_len;
 
-  if (strstr(req->content_type, "text/parameters")) {
-    if (body) {
-      if (strstr((const char*)body, "volume:")) {
-        const char* vol = strstr((const char*)body, "volume:");
-        if (vol) {
-          float volume = atof(vol + 7);
-          rtsp_conn_set_volume(conn, volume);
-        }
-      }
-    }
-  } else if (strstr(req->content_type, "application/x-apple-binary-plist")) {
+  if (strstr(req->content_type, "application/x-apple-binary-plist")) {
     if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
       int64_t value;
       if (bplist_find_int(body, body_len, "networkTimeSecs", &value)) { ESP_LOGI(TAG, "SET_PARAMETER has networkTimeSecs=%lld", (long long)value); }
@@ -876,15 +866,6 @@ static void handle_set_parameter(int socket, rtsp_conn_t* conn, const rtsp_reque
 static void handle_get_parameter(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len) {
   (void)raw;
   (void)raw_len;
-
-  if (req->body && req->body_len > 0) {
-    if (strstr((const char*)req->body, "volume")) {
-      char vol_response[32];
-      int  vol_len = snprintf(vol_response, sizeof(vol_response), "volume: %.2f\r\n", conn->volume_db);
-      rtsp_send_response(socket, conn, 200, "OK", req->cseq, "Content-Type: text/parameters\r\n", vol_response, vol_len);
-      return;
-    }
-  }
 
   rtsp_send_ok(socket, conn, req->cseq);
 }

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio_receiver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
@@ -15,31 +16,16 @@ static void audio_buffer_adjust_frames(audio_buffer_t* buffer, int delta) {
   portEXIT_CRITICAL(&buffer->lock);
 }
 
-static void audio_buffer_drain(audio_buffer_t* buffer, int frames_to_drain) {
-  for (int i = 0; i < frames_to_drain; i++) {
-    size_t item_size = 0;
-    void*  item = xRingbufferReceive(buffer->ring, &item_size, 0);
-    if (!item) { break; }
-    vRingbufferReturnItem(buffer->ring, item);
-    audio_buffer_adjust_frames(buffer, -1);
-  }
-}
-
 static bool
 audio_buffer_queue_chunk(audio_buffer_t* buffer, audio_stats_t* stats, uint32_t timestamp, const int16_t* pcm_data, size_t samples, int channels) {
   if (samples == 0) { return false; }
-
-  int current_frames = audio_buffer_get_frame_count(buffer);
-  if (current_frames > MAX_BUFFER_FRAMES) {
-    int to_drain = current_frames - MAX_BUFFER_FRAMES + 10;
-    audio_buffer_drain(buffer, to_drain);
-  }
 
   audio_frame_header_t* hdr = (audio_frame_header_t*)buffer->frame_buffer;
   hdr->rtp_timestamp = timestamp;
   hdr->samples_per_channel = (uint16_t)samples;
   hdr->channels = (uint8_t)channels;
   hdr->reserved = 0;
+  hdr->generation = audio_receiver_get_generation();
 
   size_t   pcm_bytes = samples * channels * sizeof(int16_t);
   int16_t* dest = (int16_t*)(hdr + 1);
@@ -47,7 +33,6 @@ audio_buffer_queue_chunk(audio_buffer_t* buffer, audio_stats_t* stats, uint32_t 
 
   size_t total_bytes = sizeof(*hdr) + pcm_bytes;
 
-  // Generous timeout - better to block briefly than drop audio data
   BaseType_t ret = xRingbufferSend(buffer->ring, buffer->frame_buffer, total_bytes, pdMS_TO_TICKS(100));
   if (ret != pdTRUE) {
     if (stats) { stats->buffer_underruns++; }
@@ -114,6 +99,7 @@ void audio_buffer_deinit(audio_buffer_t* buffer) {
 void audio_buffer_flush(audio_buffer_t* buffer) {
   if (!buffer || !buffer->ring) { return; }
 
+  // Zero-copy drain: receive pointer + return, no data copying
   size_t bytes_read = 0;
   void*  data = NULL;
   while ((data = xRingbufferReceive(buffer->ring, &bytes_read, 0)) != NULL) { vRingbufferReturnItem(buffer->ring, data); }

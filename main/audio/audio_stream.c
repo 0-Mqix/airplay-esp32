@@ -6,24 +6,12 @@
 #include "audio_buffer.h"
 #include "audio_decoder.h"
 #include "audio_receiver_internal.h"
-#include "audio_timing.h"
 #include "esp_log.h"
 
 static const char* TAG = "audio_stream";
 
 extern const audio_stream_ops_t audio_stream_realtime_ops;
 extern const audio_stream_ops_t audio_stream_buffered_ops;
-
-static bool apply_aac_transient_mute(audio_receiver_state_t* state, int16_t* buffer, size_t samples, int channels) {
-  if (!audio_decoder_is_aac(state->decoder)) { return false; }
-
-  if ((state->blocks_read_in_sequence <= 2) && (state->blocks_read_in_sequence != state->blocks_read)) {
-    memset(buffer, 0, samples * channels * sizeof(int16_t));
-    return true;
-  }
-
-  return false;
-}
 
 bool audio_stream_process_frame(audio_receiver_state_t* state, uint32_t timestamp, const uint8_t* audio_data, size_t audio_len) {
   if (!state || !state->decoder) { return false; }
@@ -38,8 +26,6 @@ bool audio_stream_process_frame(audio_receiver_state_t* state, uint32_t timestam
 
   int channels = info.channels > 0 ? info.channels : state->stream->format.channels;
   if (channels <= 0) { channels = 2; }
-
-  apply_aac_transient_mute(state, decode_buffer, (size_t)decoded_samples, channels);
 
   return audio_buffer_queue_decoded(&state->buffer, &state->stats, timestamp, decode_buffer, (size_t)decoded_samples, channels);
 }

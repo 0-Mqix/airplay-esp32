@@ -42,7 +42,6 @@ typedef struct {
   size_t   decrypt_buffer_size;
 
   uint64_t blocks_read;
-  uint64_t blocks_read_in_sequence;
 
   uint32_t last_rtp_timestamp;
   bool     rtp_timestamp_valid;

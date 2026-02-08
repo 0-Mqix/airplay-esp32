@@ -7,7 +7,6 @@
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
 #include "rtsp_server.h"
-#include "settings.h"
 #include "wifi.h"
 
 static const char* TAG = "main";
@@ -20,7 +19,6 @@ void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
-  ESP_ERROR_CHECK(settings_init());
 
   // Start WiFi AP
   wifi_init_ap();

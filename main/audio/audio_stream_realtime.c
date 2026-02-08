@@ -93,7 +93,6 @@ static bool realtime_receive_packet(audio_stream_t* stream, uint8_t* packet, str
   state->stats.last_timestamp = timestamp;
 
   state->blocks_read++;
-  state->blocks_read_in_sequence++;
 
   const uint8_t* audio_data = payload;
   size_t         audio_len = payload_len;

@@ -23,6 +23,5 @@ void     audio_timing_set_output_latency(audio_timing_t* timing, const audio_for
 uint32_t audio_timing_get_output_latency(const audio_timing_t* timing);
 void audio_timing_set_anchor(audio_timing_t* timing, const audio_format_t* format, uint64_t clock_id, uint64_t network_time_ns, uint32_t rtp_time);
 void audio_timing_set_playing(audio_timing_t* timing, bool playing);
-void audio_timing_set_flushing(audio_timing_t* timing, bool flushing);
 size_t
 audio_timing_read(audio_timing_t* timing, audio_buffer_t* buffer, const audio_stream_t* stream, audio_stats_t* stats, int16_t* out, size_t samples);

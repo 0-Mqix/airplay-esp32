@@ -114,7 +114,6 @@ static void buffered_audio_task(void* pvParameters) {
       state->stats.last_timestamp = timestamp;
 
       state->blocks_read++;
-      state->blocks_read_in_sequence++;
 
       if (!audio_stream_process_frame(state, timestamp, decrypted, (size_t)decrypted_len)) { state->stats.packets_dropped++; }
     }
