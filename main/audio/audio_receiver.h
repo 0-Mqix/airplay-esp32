@@ -158,11 +158,6 @@ typedef enum {
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port);
 
 /**
- * Get the active stream port (data or buffered).
- */
-uint16_t audio_receiver_get_stream_port(void);
-
-/**
  * Get the TCP port for buffered audio (after start_buffered)
  */
 uint16_t audio_receiver_get_buffered_port(void);
@@ -172,6 +167,11 @@ uint16_t audio_receiver_get_buffered_port(void);
  * Used when TEARDOWN with streams array is received (sender done sending)
  */
 void audio_receiver_stop_buffered_only(void);
+
+/**
+ * Get the active stream port (data or buffered).
+ */
+uint16_t audio_receiver_get_stream_port(void);
 
 /**
  * Set the stream type (realtime vs buffered)

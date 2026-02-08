@@ -16,6 +16,17 @@ extern const audio_stream_ops_t audio_stream_buffered_ops;
 bool audio_stream_process_frame(audio_receiver_state_t* state, uint32_t timestamp, const uint8_t* audio_data, size_t audio_len) {
   if (!state || !state->decoder) { return false; }
 
+  // After a flush (seek/skip), discard stale frames until the timestamp jumps
+  if (atomic_load(&state->flush_pending)) {
+    uint32_t flush_ts = atomic_load(&state->flush_timestamp);
+    uint32_t delta = timestamp - flush_ts;
+    // Timestamps advancing normally means stale data (delta is small and positive)
+    // A large jump or wrap means new track data
+    if (delta > 0 && delta < 44100 * 5) { return true; }
+    atomic_store(&state->flush_pending, false);
+    audio_buffer_flush(&state->buffer);
+  }
+
   size_t   capacity_samples = 0;
   int16_t* decode_buffer = audio_buffer_get_decode_buffer(&state->buffer, &capacity_samples);
   if (!decode_buffer || capacity_samples == 0) { return false; }
@@ -48,6 +59,8 @@ audio_stream_t* audio_stream_create_buffered(void) {
   return stream;
 }
 
+bool audio_stream_uses_buffer(audio_stream_type_t type) { return type == AUDIO_STREAM_BUFFERED; }
+
 void audio_stream_destroy(audio_stream_t* stream) {
   if (!stream) { return; }
 
@@ -59,4 +72,3 @@ void audio_stream_destroy(audio_stream_t* stream) {
   free(stream);
 }
 
-bool audio_stream_uses_buffer(audio_stream_type_t type) { return type == AUDIO_STREAM_BUFFERED; }

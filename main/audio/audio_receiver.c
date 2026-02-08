@@ -9,6 +9,7 @@
 #include "audio_receiver_internal.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
+
 #include "esp_log.h"
 
 #define DEFAULT_SAMPLE_RATE     44100
@@ -241,9 +242,33 @@ void audio_receiver_get_stats(audio_stats_t* stats) {
 }
 
 size_t audio_receiver_read(int16_t* buffer, size_t samples) {
-  if (!receiver.buffer.ring || !buffer || samples == 0) { return 0; }
+  if (!receiver.buffer.ring || !receiver.stream || !buffer || samples == 0) { return 0; }
 
-  return audio_timing_read(&receiver.timing, &receiver.buffer, receiver.stream, &receiver.stats, buffer, samples);
+  size_t item_size = 0;
+  void*  item = NULL;
+  if (!audio_buffer_take(&receiver.buffer, &item, &item_size, 0)) { return 0; }
+
+  size_t result = 0;
+
+  if (item_size < sizeof(audio_frame_header_t)) { goto done; }
+
+  audio_frame_header_t* hdr = (audio_frame_header_t*)item;
+
+  if (hdr->generation != audio_receiver_get_generation()) { goto done; }
+
+  size_t   frame_samples = hdr->samples_per_channel;
+  size_t   channels = hdr->channels ? hdr->channels : receiver.stream->format.channels;
+  int16_t* pcm = (int16_t*)(hdr + 1);
+
+  if (frame_samples == 0 || channels == 0) { goto done; }
+  if (frame_samples > samples) { frame_samples = samples; }
+
+  memcpy(buffer, pcm, frame_samples * channels * sizeof(int16_t));
+  result = frame_samples;
+
+done:
+  audio_buffer_return(&receiver.buffer, item);
+  return result;
 }
 
 bool audio_receiver_has_data(void) {
@@ -253,6 +278,8 @@ bool audio_receiver_has_data(void) {
 
 void audio_receiver_flush(void) {
   atomic_fetch_add(&audio_generation, 1);
+  atomic_store(&receiver.flush_timestamp, receiver.stats.last_timestamp);
+  atomic_store(&receiver.flush_pending, true);
   audio_buffer_flush(&receiver.buffer);
   receiver.timing.playout_started = false;
 }

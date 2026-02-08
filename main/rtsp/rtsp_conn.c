@@ -75,4 +75,3 @@ void rtsp_conn_cleanup(rtsp_conn_t* conn) {
   // Reset encryption state
   conn->encrypted_mode = false;
 }
-

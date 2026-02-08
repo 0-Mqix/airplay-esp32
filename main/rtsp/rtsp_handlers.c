@@ -282,7 +282,7 @@ static void handle_options(int socket, rtsp_conn_t* conn, const rtsp_request_t* 
   const char* public_methods =
     "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, TEARDOWN, "
     "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
-    "SETRATEANCHORTIME\r\n";
+    "SETRATEANCHORTIME, SETPEERSX\r\n";
 
   rtsp_send_response(socket, conn, 200, "OK", req->cseq, public_methods, NULL, 0);
 }
@@ -866,6 +866,14 @@ static void handle_set_parameter(int socket, rtsp_conn_t* conn, const rtsp_reque
 static void handle_get_parameter(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len) {
   (void)raw;
   (void)raw_len;
+
+  if (req->body && req->body_len > 0) {
+    if (strstr((const char*)req->body, "volume")) {
+      const char* vol_response = "volume: -12.00\r\n";
+      rtsp_send_response(socket, conn, 200, "OK", req->cseq, "Content-Type: text/parameters\r\n", vol_response, strlen(vol_response));
+      return;
+    }
+  }
 
   rtsp_send_ok(socket, conn, req->cseq);
 }

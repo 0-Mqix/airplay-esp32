@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -9,6 +10,7 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -45,6 +47,9 @@ typedef struct {
 
   uint32_t last_rtp_timestamp;
   bool     rtp_timestamp_valid;
+
+  atomic_bool  flush_pending;
+  atomic_uint_least32_t flush_timestamp;
 } audio_receiver_state_t;
 
 bool audio_stream_process_frame(audio_receiver_state_t* state, uint32_t timestamp, const uint8_t* audio_data, size_t audio_len);
