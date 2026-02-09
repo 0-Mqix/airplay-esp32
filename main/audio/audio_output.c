@@ -17,11 +17,22 @@
 #define I2S_LRCK_PIN CONFIG_I2S_LRCK_PIN
 #define I2S_DOUT_PIN CONFIG_I2S_DATA_PIN
 #define SAMPLE_RATE  44100
-// Read multiple frames at once to reduce task wake-ups and improve efficiency
+// Small reads keep decode pressure low; DMA depth handles jitter
 #define FRAME_SAMPLES 512
 
 static i2s_chan_handle_t tx_handle;
 static TaskHandle_t      playback_task_handle = NULL;
+
+// Playback stats — reset on each playout start
+static volatile uint32_t play_frames = 0;
+static volatile uint32_t play_underruns = 0;
+static volatile bool     play_active = false;
+
+void audio_output_get_playback_stats(uint32_t* frames, uint32_t* underruns, bool* active) {
+  if (frames) { *frames = play_frames; }
+  if (underruns) { *underruns = play_underruns; }
+  if (active) { *active = play_active; }
+}
 
 // Fixed -12 dB attenuation: >>2 = quarter power, ~0.53V RMS into AUX
 static void apply_volume(int16_t* buf, size_t n) {
@@ -46,14 +57,18 @@ static void playback_task(void* arg) {
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES);
 
     if (samples > 0) {
+      if (!play_active) {
+        play_frames = 0;
+        play_underruns = 0;
+        play_active = true;
+      }
       apply_volume(pcm, samples * 2);
-      // I2S write blocks until DMA has space
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
+      play_frames++;
     } else {
-      // No data available - write silence to keep I2S clock running
-      // portMAX_DELAY ensures we block until DMA has space, yielding CPU
+      play_active = false;
+      play_underruns++;
       i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written, portMAX_DELAY);
-      // Extra yield when idle to ensure watchdog doesn't trigger
       taskYIELD();
     }
   }
@@ -61,9 +76,10 @@ static void playback_task(void* arg) {
 
 esp_err_t audio_output_init(void) {
   i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  // DMA buffer: 8 descriptors * 512 frames = ~93ms at 44.1kHz stereo
+  // DMA buffer: 8 descriptors * 1024 frames = ~186ms at 44.1kHz stereo
+  // Larger descriptors = longer i2s_channel_write sleep = more CPU for decode on Core 1
   chan_cfg.dma_desc_num = 8;
-  chan_cfg.dma_frame_num = 512;
+  chan_cfg.dma_frame_num = 1024;
 
   ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &tx_handle, NULL), TAG, "channel create failed");
 

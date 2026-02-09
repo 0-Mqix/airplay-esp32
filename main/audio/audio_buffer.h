@@ -23,10 +23,10 @@ typedef struct __attribute__((packed)) {
   uint32_t generation;
 } audio_frame_header_t;
 
-#define MAX_RING_BUFFER_FRAMES 5000
+#define MAX_RING_BUFFER_FRAMES 2000
 #define BYTES_PER_FRAME        (sizeof(audio_frame_header_t) + (AAC_FRAMES_PER_PACKET * AUDIO_MAX_CHANNELS * AUDIO_BYTES_PER_SAMPLE))
 #define AUDIO_BUFFER_SIZE      (MAX_RING_BUFFER_FRAMES * BYTES_PER_FRAME)
-#define MAX_BUFFER_FRAMES      5000
+#define MAX_BUFFER_FRAMES      2000
 
 typedef struct {
   RingbufHandle_t ring;

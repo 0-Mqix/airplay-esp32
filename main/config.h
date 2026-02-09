@@ -33,10 +33,10 @@
 #define TASK_AUDIO_RECV_PRIORITY 19
 #define TASK_AUDIO_RECV_STACK    12288
 
-// Control receive (realtime) - just below audio recv
-#define TASK_CTRL_RECV_CORE     0
-#define TASK_CTRL_RECV_PRIORITY 18
-#define TASK_CTRL_RECV_STACK    4096
+// Audio decode - CPU-intensive ALAC decode on Core 1, below playback
+#define TASK_DECODE_CORE     1
+#define TASK_DECODE_PRIORITY 18
+#define TASK_DECODE_STACK    8192
 
 // Buffered audio (TCP streaming)
 #define TASK_BUFFERED_CORE     0

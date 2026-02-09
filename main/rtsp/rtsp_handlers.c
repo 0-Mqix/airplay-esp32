@@ -2,7 +2,6 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <inttypes.h>
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
@@ -331,7 +330,7 @@ static void handle_get(int socket, rtsp_conn_t* conn, const rtsp_request_t* req,
     plist_dict_int(&p, "type", 96);
     plist_dict_int(&p, "audioType", 0x64);
     plist_dict_int(&p, "inputLatencyMicros", 0);
-    plist_dict_int(&p, "outputLatencyMicros", audio_receiver_get_output_latency_us());
+    plist_dict_int(&p, "outputLatencyMicros", 0);
     plist_dict_end(&p);
     plist_array_end(&p);
 
@@ -618,11 +617,16 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
 
   if (body && body_len > 0 && is_bplist && request_has_streams) {
     for (size_t i = 0; i < stream_count; i++) {
-      int64_t stream_type = -1;
-      size_t  ekey_len = 0, eiv_len = 0, shk_len = 0;
-      if (bplist_get_stream_info(body, body_len, i, &stream_type, &ekey_len, &eiv_len, &shk_len)) {
+      int64_t  stream_type = -1;
+      uint16_t client_ctrl_port = 0;
+      size_t   ekey_len = 0, eiv_len = 0, shk_len = 0;
+      if (bplist_get_stream_info(body, body_len, i, &stream_type, &client_ctrl_port, &ekey_len, &eiv_len, &shk_len)) {
         if (i == 0) {
           conn->stream_type = stream_type;
+          if (client_ctrl_port > 0) {
+            conn->client_control_port = client_ctrl_port;
+            ESP_LOGI(TAG, "Client control port from bplist: %u", client_ctrl_port);
+          }
           audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
         }
 
@@ -815,9 +819,9 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
 
   // Start audio receiver
   audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
+  audio_receiver_set_client_addr(conn->client_ip, conn->client_control_port);
   audio_receiver_start_stream(conn->data_port, conn->control_port, conn->buffered_port);
 
-  audio_receiver_set_playing(true);
   conn->stream_paused = false;
   conn->stream_active = true;
 }
@@ -826,20 +830,10 @@ static void handle_record(int socket, rtsp_conn_t* conn, const rtsp_request_t* r
   (void)raw;
   (void)raw_len;
 
+  audio_receiver_set_client_addr(conn->client_ip, conn->client_control_port);
   audio_receiver_start_stream(conn->data_port, conn->control_port, conn->buffered_port);
-  audio_receiver_set_playing(true);
 
-  char     headers[128];
-  uint32_t output_latency_us = audio_receiver_get_output_latency_us();
-  int      sample_rate = conn->sample_rate > 0 ? conn->sample_rate : 44100;
-  uint32_t latency_samples = (uint32_t)(((uint64_t)output_latency_us * (uint64_t)sample_rate) / 1000000ULL);
-  snprintf(
-    headers,
-    sizeof(headers),
-    "Audio-Latency: %" PRIu32
-    "\r\n"
-    "Audio-Jack-Status: connected\r\n",
-    latency_samples);
+  const char* headers = "Audio-Latency: 0\r\nAudio-Jack-Status: connected\r\n";
 
   rtsp_send_response(socket, conn, 200, "OK", req->cseq, headers, NULL, 0);
 }
@@ -927,40 +921,22 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t* conn, const rtsp_r
   const uint8_t* body = req->body;
   size_t         body_len = req->body_len;
 
-  double   rate = 1.0;
-  uint64_t clock_id = 0;
-  uint64_t network_time_secs = 0;
-  uint64_t network_time_frac = 0;
-  uint64_t rtp_time = 0;
+  double rate = 1.0;
 
-  if (body && body_len > 0 && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
+  if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
     if (!bplist_find_real(body, body_len, "rate", &rate)) {
       int64_t rate_int;
       if (bplist_find_int(body, body_len, "rate", &rate_int)) { rate = (double)rate_int; }
     }
-
-    int64_t value;
-    if (bplist_find_int(body, body_len, "networkTimeTimelineID", &value)) { clock_id = (uint64_t)value; }
-    if (bplist_find_int(body, body_len, "networkTimeSecs", &value)) { network_time_secs = (uint64_t)value; }
-    if (bplist_find_int(body, body_len, "networkTimeFrac", &value)) { network_time_frac = (uint64_t)value; }
-    if (bplist_find_int(body, body_len, "rtpTime", &value)) { rtp_time = (uint64_t)value; }
-
-    ESP_LOGI(TAG, "SETRATEANCHORTIME: secs=%llu, rtp=%llu, rate=%.1f", (unsigned long long)network_time_secs, (unsigned long long)rtp_time, rate);
-
-    if (network_time_secs != 0 && rtp_time != 0) {
-      uint64_t frac = network_time_frac >> 32;
-      frac = (frac * 1000000000ULL) >> 32;
-      uint64_t network_time_ns = network_time_secs * 1000000000ULL + frac;
-      audio_receiver_set_anchor_time(clock_id, network_time_ns, (uint32_t)rtp_time);
-    }
   }
+
+  ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f", rate);
 
   if (rate == 0.0) {
     conn->stream_paused = true;
-    audio_receiver_set_playing(false);
+    audio_receiver_flush();
   } else {
     conn->stream_paused = false;
-    audio_receiver_set_playing(true);
   }
 
   rtsp_send_ok(socket, conn, req->cseq);
@@ -969,17 +945,8 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t* conn, const rtsp_r
 static void handle_setpeers(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len) {
   (void)raw;
   (void)raw_len;
+  (void)req->body;
 
-  const uint8_t* body = req->body;
-  size_t         body_len = req->body_len;
-
-  ESP_LOGI(TAG, "%s: body_len=%zu", req->method, body_len);
-  if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) { ESP_LOGI(TAG, "SETPEERS: got bplist"); }
-
-  // Reset audio timing anchor when PTP peers change
-  // The PTP clock master may change, invalidating the current anchor
-  ESP_LOGI(TAG, "SETPEERS: Resetting timing anchor (PTP peers changed)");
-  audio_receiver_reset_timing();
-
+  ESP_LOGD(TAG, "%s: body_len=%zu", req->method, req->body_len);
   rtsp_send_ok(socket, conn, req->cseq);
 }

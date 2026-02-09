@@ -141,7 +141,7 @@ bool bplist_get_streams_count(const uint8_t* plist, size_t plist_len, size_t* co
  * @param shk_len Length of shk data if present
  * @return true if stream entry parsed
  */
-bool bplist_get_stream_info(const uint8_t* plist, size_t plist_len, size_t index, int64_t* type, size_t* ekey_len, size_t* eiv_len, size_t* shk_len);
+bool bplist_get_stream_info(const uint8_t* plist, size_t plist_len, size_t index, int64_t* type, uint16_t* control_port, size_t* ekey_len, size_t* eiv_len, size_t* shk_len);
 
 // Stream key debug info
 typedef struct {

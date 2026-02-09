@@ -8,7 +8,6 @@
 #include "audio_decoder.h"
 #include "audio_receiver_internal.h"
 #include "audio_stream.h"
-#include "audio_timing.h"
 
 #include "esp_log.h"
 
@@ -86,12 +85,9 @@ esp_err_t audio_receiver_init(void) {
     return ESP_ERR_NO_MEM;
   }
 
-  size_t pending_capacity = sizeof(audio_frame_header_t) + (MAX_SAMPLES_PER_FRAME * AUDIO_MAX_CHANNELS * sizeof(int16_t));
-  audio_timing_init(&receiver.timing, pending_capacity);
-  audio_timing_set_format(&receiver.timing, &receiver.stream->format);
-
   receiver.buffered_listen_socket = -1;
   receiver.buffered_client_socket = -1;
+  receiver.control_socket = -1;
 
   audio_receiver_reset_blocks();
 
@@ -111,8 +107,6 @@ void audio_receiver_set_format(const audio_format_t* format) {
   audio_decoder_config_t cfg = {.format = *format};
   receiver.decoder = audio_decoder_create(&cfg);
   if (!receiver.decoder) { ESP_LOGW(TAG, "Decoder not initialized for codec: %s", format->codec); }
-
-  audio_timing_set_format(&receiver.timing, format);
 }
 
 void audio_receiver_set_encryption(const audio_encrypt_t* encrypt) {
@@ -126,21 +120,10 @@ void audio_receiver_set_encryption(const audio_encrypt_t* encrypt) {
   }
 }
 
-void audio_receiver_set_output_latency_us(uint32_t latency_us) {
-  if (!receiver.stream) { return; }
-  audio_timing_set_output_latency(&receiver.timing, &receiver.stream->format, latency_us);
+void audio_receiver_set_client_addr(uint32_t client_ip, uint16_t client_control_port) {
+  receiver.client_ip = client_ip;
+  receiver.client_control_port = client_control_port;
 }
-
-uint32_t audio_receiver_get_output_latency_us(void) { return audio_timing_get_output_latency(&receiver.timing); }
-
-void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns, uint32_t rtp_time) {
-  if (!receiver.stream) { return; }
-  audio_timing_set_anchor(&receiver.timing, &receiver.stream->format, clock_id, network_time_ns, rtp_time);
-}
-
-void audio_receiver_set_playing(bool playing) { audio_timing_set_playing(&receiver.timing, playing); }
-
-void audio_receiver_reset_timing(void) { audio_timing_reset(&receiver.timing); }
 
 void audio_receiver_set_stream_type(audio_stream_type_t type) {
   if (!receiver.realtime_stream || !receiver.buffered_stream) { return; }
@@ -173,7 +156,7 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
 
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
-  audio_timing_reset(&receiver.timing);
+  receiver.playout_started = false;
   audio_receiver_reset_blocks();
 
   return receiver.stream->ops->start(receiver.stream, data_port);
@@ -187,7 +170,7 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   // Always reset state for new session, even if stream is already running
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
-  audio_timing_reset(&receiver.timing);
+  receiver.playout_started = false;
   audio_receiver_reset_blocks();
 
   // Buffered streams use a fixed port, no need to restart if already running
@@ -241,8 +224,15 @@ void audio_receiver_get_stats(audio_stats_t* stats) {
   memcpy(stats, &receiver.stats, sizeof(receiver.stats));
 }
 
+#define STARTUP_BUFFER_FRAMES 120
+
 size_t audio_receiver_read(int16_t* buffer, size_t samples) {
   if (!receiver.buffer.ring || !receiver.stream || !buffer || samples == 0) { return 0; }
+
+  if (!receiver.playout_started) {
+    int buffered_frames = audio_buffer_get_frame_count(&receiver.buffer);
+    if (buffered_frames < STARTUP_BUFFER_FRAMES) { return 0; }
+  }
 
   size_t item_size = 0;
   void*  item = NULL;
@@ -264,6 +254,7 @@ size_t audio_receiver_read(int16_t* buffer, size_t samples) {
   if (frame_samples > samples) { frame_samples = samples; }
 
   memcpy(buffer, pcm, frame_samples * channels * sizeof(int16_t));
+  receiver.playout_started = true;
   result = frame_samples;
 
 done:
@@ -281,7 +272,9 @@ void audio_receiver_flush(void) {
   atomic_store(&receiver.flush_timestamp, receiver.stats.last_timestamp);
   atomic_store(&receiver.flush_pending, true);
   audio_buffer_flush(&receiver.buffer);
-  receiver.timing.playout_started = false;
+  receiver.playout_started = false;
 }
 
 uint16_t audio_receiver_get_buffered_port(void) { return receiver.buffered_port; }
+
+int audio_receiver_get_buffered_frames(void) { return audio_buffer_get_frame_count(&receiver.buffer); }

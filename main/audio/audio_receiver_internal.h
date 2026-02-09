@@ -9,9 +9,9 @@
 #include "audio_decoder.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
-#include "audio_timing.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/ringbuf.h"
 #include "freertos/task.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
@@ -23,16 +23,21 @@ typedef struct {
 
   audio_decoder_t* decoder;
   audio_buffer_t   buffer;
-  audio_timing_t   timing;
 
   audio_stats_t stats;
 
-  int          data_socket;
-  int          control_socket;
-  TaskHandle_t task_handle;
-  TaskHandle_t control_task_handle;
+  bool playout_started;
+
+  int             data_socket;
+  TaskHandle_t    task_handle;
+  RingbufHandle_t decode_ring;
+  TaskHandle_t    decode_task_handle;
   uint16_t     data_port;
   uint16_t     control_port;
+  int          control_socket;
+  uint32_t     client_ip;
+  uint16_t     client_control_port;
+  uint16_t     retransmit_seq;
 
   int          buffered_listen_socket;
   int          buffered_client_socket;

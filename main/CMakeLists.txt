@@ -8,9 +8,10 @@ idf_component_register(
         "audio/audio_stream_buffered.c"
         "audio/audio_decoder.c"
         "audio/audio_buffer.c"
-        "audio/audio_timing.c"
+
         "audio/audio_crypto.c"
         "audio/audio_output.c"
+        "audio/audio_stats.c"
         "rtsp/rtsp_server.c"
         "rtsp/rtsp_conn.c"
         "rtsp/rtsp_message.c"

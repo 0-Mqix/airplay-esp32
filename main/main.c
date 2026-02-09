@@ -1,5 +1,6 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
+#include "audio_stats.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,6 +31,7 @@ void app_main(void) {
   ESP_ERROR_CHECK(audio_receiver_init());
   ESP_ERROR_CHECK(audio_output_init());
   audio_output_start();
+  audio_stats_start();
   mdns_airplay_init();
   ESP_ERROR_CHECK(rtsp_server_start());
 

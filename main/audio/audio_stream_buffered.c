@@ -121,11 +121,11 @@ static void buffered_audio_task(void* pvParameters) {
     close(client_sock);
     state->buffered_client_socket = -1;
 
-    // Soft reset when client disconnects - clear stale buffer/timing state
+    // Soft reset when client disconnects - clear stale buffer state
     // so a reconnecting client gets a clean start
     if (stream->running) {
       audio_buffer_flush(&state->buffer);
-      audio_timing_reset(&state->timing);
+      state->playout_started = false;
       ESP_LOGI(TAG, "Buffered audio ready for new connection");
     }
   }

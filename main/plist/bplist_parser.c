@@ -600,10 +600,11 @@ bool bplist_get_streams_count(const uint8_t* plist, size_t plist_len, size_t* co
   return false;
 }
 
-bool bplist_get_stream_info(const uint8_t* plist, size_t plist_len, size_t index, int64_t* type, size_t* ekey_len, size_t* eiv_len, size_t* shk_len) {
+bool bplist_get_stream_info(const uint8_t* plist, size_t plist_len, size_t index, int64_t* type, uint16_t* control_port, size_t* ekey_len, size_t* eiv_len, size_t* shk_len) {
   if (!type) { return false; }
 
   *type = -1;
+  if (control_port) { *control_port = 0; }
   if (ekey_len) { *ekey_len = 0; }
   if (eiv_len) { *eiv_len = 0; }
   if (shk_len) { *shk_len = 0; }
@@ -706,6 +707,9 @@ bool bplist_get_stream_info(const uint8_t* plist, size_t plist_len, size_t index
         if (strcmp(stream_key, "type") == 0) {
           int64_t type_val = 0;
           if (bplist_read_int(plist, plist_len, stream_val_offset, &type_val)) { *type = type_val; }
+        } else if (strcmp(stream_key, "controlPort") == 0 && control_port) {
+          int64_t port_val = 0;
+          if (bplist_read_int(plist, plist_len, stream_val_offset, &port_val)) { *control_port = (uint16_t)port_val; }
         } else if (strcmp(stream_key, "ekey") == 0 && ekey_len) {
           bplist_read_data_len(plist, plist_len, stream_val_offset, ekey_len);
         } else if (strcmp(stream_key, "eiv") == 0 && eiv_len) {
@@ -887,7 +891,7 @@ bool bplist_find_stream_crypto(
     size_t  local_eiv_len = 0;
     size_t  local_shk_len = 0;
 
-    if (!bplist_get_stream_info(plist, plist_len, i, &type, &local_ekey_len, &local_eiv_len, &local_shk_len)) { continue; }
+    if (!bplist_get_stream_info(plist, plist_len, i, &type, NULL, &local_ekey_len, &local_eiv_len, &local_shk_len)) { continue; }
 
     if (type != stream_type) { continue; }
 

@@ -35,6 +35,8 @@ audio_buffer_queue_chunk(audio_buffer_t* buffer, audio_stats_t* stats, uint32_t 
 
   BaseType_t ret = xRingbufferSend(buffer->ring, buffer->frame_buffer, total_bytes, pdMS_TO_TICKS(100));
   if (ret != pdTRUE) {
+    ESP_LOGW(TAG, "OVERRUN ring full, dropping frame ts=%lu samples=%u frames_buffered=%d",
+             (unsigned long)timestamp, (unsigned)samples, buffer->buffered_frames);
     if (stats) { stats->buffer_underruns++; }
     return false;
   }

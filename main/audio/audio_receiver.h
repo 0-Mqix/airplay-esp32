@@ -71,6 +71,11 @@ void audio_receiver_set_format(const audio_format_t* format);
 void audio_receiver_set_encryption(const audio_encrypt_t* encrypt);
 
 /**
+ * Set client address for retransmit requests (UDP realtime mode)
+ */
+void audio_receiver_set_client_addr(uint32_t client_ip, uint16_t client_control_port);
+
+/**
  * Start receiving audio on specified port
  */
 esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port);
@@ -114,34 +119,6 @@ void audio_receiver_flush(void);
 uint32_t audio_receiver_get_generation(void);
 
 /**
- * Set advertised/target output latency in microseconds.
- */
-void audio_receiver_set_output_latency_us(uint32_t latency_us);
-
-/**
- * Get current output latency in microseconds.
- */
-uint32_t audio_receiver_get_output_latency_us(void);
-
-/**
- * Provide anchor timing information from SETRATEANCHORTIME.
- * @param clock_id PTP clock ID (networkTimeTimelineID)
- * @param network_time_ns Anchor time in nanoseconds (PTP timeline)
- * @param rtp_time RTP timestamp for the anchor
- */
-void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns, uint32_t rtp_time);
-
-/**
- * Enable or pause playout scheduling.
- */
-void audio_receiver_set_playing(bool playing);
-
-/**
- * Reset timing anchor (call when PTP clock changes, e.g., SETPEERS)
- */
-void audio_receiver_reset_timing(void);
-
-/**
  * Stream types for AirPlay 2
  */
 typedef enum {
@@ -161,6 +138,11 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port);
  * Get the TCP port for buffered audio (after start_buffered)
  */
 uint16_t audio_receiver_get_buffered_port(void);
+
+/**
+ * Get number of decoded frames currently in the PCM ring buffer
+ */
+int audio_receiver_get_buffered_frames(void);
 
 /**
  * Stop only the buffered receiver but keep playing buffered data
