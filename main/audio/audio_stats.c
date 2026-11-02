@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "wifi.h"
 
 static const char* TAG = "stats";
 
@@ -13,7 +14,7 @@ static void stats_task(void* arg) {
   // Previous snapshot for delta calculation
   uint32_t      prev_frames = 0, prev_underruns = 0;
   audio_stats_t prev_recv = {0};
-  uint32_t      prev_ok = 0, prev_sil = 0, prev_gap = 0, prev_fdrain = 0, prev_recovered = 0;
+  uint32_t      prev_ok = 0, prev_sil = 0, prev_gap = 0, prev_resync = 0, prev_recovered = 0;
 
   while (true) {
     vTaskDelay(pdMS_TO_TICKS(10000));
@@ -29,12 +30,12 @@ static void stats_task(void* arg) {
     // Receiver pipeline
     audio_stats_t recv;
     audio_receiver_get_stats(&recv);
-    int pcm_buf = audio_receiver_get_buffered_frames();
+    int pcm_ms = audio_receiver_get_buffered_ms();
 
     // Reorder buffer
-    uint32_t ok = 0, sil = 0, gap = 0, fdrain = 0, recovered = 0;
+    uint32_t ok = 0, sil = 0, gap = 0, resync = 0, recovered = 0;
     int      reorder_depth = 0;
-    audio_realtime_get_reorder_stats(&ok, &sil, &gap, &fdrain, &recovered, &reorder_depth);
+    audio_realtime_get_reorder_stats(&ok, &sil, &gap, &resync, &recovered, &reorder_depth);
 
     // Deltas (handle counter reset on playout start)
     uint32_t d_frames = frames >= prev_frames ? frames - prev_frames : frames;
@@ -46,21 +47,28 @@ static void stats_task(void* arg) {
     uint32_t d_ok = ok - prev_ok;
     uint32_t d_sil = sil - prev_sil;
     uint32_t d_gap = gap - prev_gap;
-    uint32_t d_fdrain = fdrain - prev_fdrain;
+    uint32_t d_resync = resync - prev_resync;
     uint32_t d_recovered = recovered - prev_recovered;
 
     // Memory
-    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t   psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t   iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t decode_stack = 0, buffered_stack = 0;
+    audio_receiver_get_stack_free(&decode_stack, &buffered_stack);
 
-    ESP_LOGI(TAG, "%s play=+%lu ur=+%lu | recv=+%lu dec=+%lu drop=+%lu late=+%lu | ok=+%lu sil=+%lu gap=+%lu fd=+%lu re=+%lu depth=%d | pcm=%d | ps=%uK i=%uK",
+    // Phone signal: above -60 dBm is good, below -75 dBm expect loss
+    int rssi = 0;
+    if (!wifi_get_station_rssi(&rssi)) { rssi = 0; }
+
+    ESP_LOGI(TAG, "%s play=+%lu ur=+%lu | recv=+%lu dec=+%lu drop=+%lu late=+%lu | ok=+%lu sil=+%lu gap=+%lu resync=+%lu re=+%lu depth=%d | pcm=%dms | rssi=%ddBm | ps=%uK i=%uK | stack free dec=%lu buf=%lu",
              active ? "PLAY" : "STOP",
              (unsigned long)d_frames, (unsigned long)d_underruns,
              (unsigned long)d_recv, (unsigned long)d_dec,
              (unsigned long)d_drop, (unsigned long)d_late,
-             (unsigned long)d_ok, (unsigned long)d_sil, (unsigned long)d_gap, (unsigned long)d_fdrain, (unsigned long)d_recovered, reorder_depth,
-             pcm_buf,
-             (unsigned)(psram_free / 1024), (unsigned)(iram_free / 1024));
+             (unsigned long)d_ok, (unsigned long)d_sil, (unsigned long)d_gap, (unsigned long)d_resync, (unsigned long)d_recovered, reorder_depth,
+             pcm_ms, rssi,
+             (unsigned)(psram_free / 1024), (unsigned)(iram_free / 1024),
+             (unsigned long)decode_stack, (unsigned long)buffered_stack);
 
     // Save snapshot
     prev_frames = frames;
@@ -69,7 +77,7 @@ static void stats_task(void* arg) {
     prev_ok = ok;
     prev_sil = sil;
     prev_gap = gap;
-    prev_fdrain = fdrain;
+    prev_resync = resync;
     prev_recovered = recovered;
   }
 }

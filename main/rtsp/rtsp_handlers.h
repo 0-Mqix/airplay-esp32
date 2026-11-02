@@ -76,3 +76,13 @@ void rtsp_get_device_id(char* device_id, size_t len);
 // Event port task management
 void rtsp_start_event_port_task(int listen_socket);
 void rtsp_stop_event_port_task(void);
+
+/**
+ * Whether conn has the playing session (it set up the current stream)
+ */
+bool rtsp_owns_session(const rtsp_conn_t* conn);
+
+/**
+ * Connection closes: stop audio and the event port if it had the session
+ */
+void rtsp_release_session(rtsp_conn_t* conn);

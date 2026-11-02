@@ -26,11 +26,11 @@ typedef struct __attribute__((packed)) {
 #define MAX_RING_BUFFER_FRAMES 2000
 #define BYTES_PER_FRAME        (sizeof(audio_frame_header_t) + (AAC_FRAMES_PER_PACKET * AUDIO_MAX_CHANNELS * AUDIO_BYTES_PER_SAMPLE))
 #define AUDIO_BUFFER_SIZE      (MAX_RING_BUFFER_FRAMES * BYTES_PER_FRAME)
-#define MAX_BUFFER_FRAMES      2000
 
 typedef struct {
   RingbufHandle_t ring;
   int             buffered_frames;
+  int             buffered_samples; // Per channel, across all queued frames
   portMUX_TYPE    lock;
   uint8_t*        frame_buffer;
   int16_t*        decode_buffer;
@@ -41,13 +41,22 @@ esp_err_t audio_buffer_init(audio_buffer_t* buffer);
 void      audio_buffer_deinit(audio_buffer_t* buffer);
 void      audio_buffer_flush(audio_buffer_t* buffer);
 int       audio_buffer_get_frame_count(audio_buffer_t* buffer);
+int       audio_buffer_get_sample_count(audio_buffer_t* buffer);
 bool      audio_buffer_take(audio_buffer_t* buffer, void** item, size_t* item_size, TickType_t ticks);
 void      audio_buffer_return(audio_buffer_t* buffer, void* item);
 int16_t*  audio_buffer_get_decode_buffer(audio_buffer_t* buffer, size_t* capacity_samples);
-bool      audio_buffer_queue_decoded(
-       audio_buffer_t* buffer,
-       audio_stats_t*  stats,
-       uint32_t        timestamp,
-       const int16_t*  pcm_data,
-       size_t          samples,
-       int             channels);
+
+/**
+ * Queue decoded PCM, split into ring buffer frames.
+ * @param generation Flush generation the source packet was received in. Frames from an
+ *                   older generation are dropped by the reader, and queueing gives up
+ *                   waiting for space once a flush happens.
+ */
+bool audio_buffer_queue_decoded(
+  audio_buffer_t* buffer,
+  audio_stats_t*  stats,
+  uint32_t        generation,
+  uint32_t        timestamp,
+  const int16_t*  pcm_data,
+  size_t          samples,
+  int             channels);

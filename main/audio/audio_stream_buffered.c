@@ -14,7 +14,9 @@
 #include "esp_log.h"
 #include "network/socket_utils.h"
 
-#define BUFFERED_AUDIO_PACKET_SIZE 8192
+// The length prefix is 16 bits, so a packet never exceeds this. Lossless (ALAC)
+// packets can be well over 8 KB.
+#define BUFFERED_AUDIO_PACKET_SIZE 65536
 
 static const char* TAG = "audio_buf";
 
@@ -43,6 +45,49 @@ static ssize_t read_exact(audio_stream_t* stream, int sock, uint8_t* buf, size_t
     return -1; // Shutdown requested
   }
   return (ssize_t)total;
+}
+
+// Decrypt, flush-filter, decode and queue one packet (without the 2-byte length prefix)
+static void buffered_handle_packet(audio_stream_t* stream, uint8_t* packet, size_t packet_len) {
+  audio_receiver_state_t* state = audio_stream_state(stream);
+
+  state->stats.packets_received++;
+
+  // RTP header: the sequence number and timestamp below must exist
+  if (packet_len < 12) {
+    state->stats.packets_dropped++;
+    return;
+  }
+
+  uint32_t seq_no = ((uint32_t)packet[1] << 16) | ((uint32_t)packet[2] << 8) | packet[3];
+  uint32_t timestamp = ((uint32_t)packet[4] << 24) | ((uint32_t)packet[5] << 16) | ((uint32_t)packet[6] << 8) | packet[7];
+
+  uint8_t* decrypted = state->decrypt_buffer;
+  size_t   decrypt_capacity = state->decrypt_buffer_size;
+  if (!decrypted) {
+    decrypted = packet + 12;
+    decrypt_capacity = packet_len > 12 ? packet_len - 12 : 0;
+  }
+
+  int decrypted_len = audio_crypto_decrypt_buffered(&stream->encrypt, packet, packet_len, decrypted, decrypt_capacity);
+  if (decrypted_len < 0) {
+    state->stats.decrypt_errors++;
+    state->stats.packets_dropped++;
+    return;
+  }
+
+  // Stamp the generation before the flush check, so a flush that lands while this
+  // packet is decoded still invalidates it
+  uint32_t generation = audio_receiver_get_generation();
+
+  if (audio_stream_drop_flushed(state, seq_no, timestamp)) { return; }
+
+  state->stats.last_seq = (uint16_t)(seq_no & 0xFFFF);
+  state->stats.last_timestamp = timestamp;
+
+  state->blocks_read++;
+
+  if (!audio_stream_process_frame(state, generation, timestamp, decrypted, (size_t)decrypted_len)) { state->stats.packets_dropped++; }
 }
 
 static void buffered_audio_task(void* pvParameters) {
@@ -91,43 +136,15 @@ static void buffered_audio_task(void* pvParameters) {
       size_t packet_len = data_len - 2;
       if (read_exact(stream, client_sock, packet, packet_len) != (ssize_t)packet_len) { break; }
 
-      state->stats.packets_received++;
-
-      uint32_t seq_no = (packet[1] << 16) | (packet[2] << 8) | packet[3];
-      uint32_t timestamp = (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
-
-      uint8_t* decrypted = state->decrypt_buffer;
-      size_t   decrypt_capacity = state->decrypt_buffer_size;
-      if (!decrypted) {
-        decrypted = packet + 12;
-        decrypt_capacity = packet_len > 12 ? packet_len - 12 : 0;
-      }
-
-      int decrypted_len = audio_crypto_decrypt_buffered(&stream->encrypt, packet, packet_len, decrypted, decrypt_capacity);
-      if (decrypted_len < 0) {
-        state->stats.decrypt_errors++;
-        state->stats.packets_dropped++;
-        continue;
-      }
-
-      state->stats.last_seq = (uint16_t)(seq_no & 0xFFFF);
-      state->stats.last_timestamp = timestamp;
-
-      state->blocks_read++;
-
-      if (!audio_stream_process_frame(state, timestamp, decrypted, (size_t)decrypted_len)) { state->stats.packets_dropped++; }
+      buffered_handle_packet(stream, packet, packet_len);
+      state->buffered_stack_free = uxTaskGetStackHighWaterMark(NULL);
     }
 
     close(client_sock);
     state->buffered_client_socket = -1;
 
-    // Soft reset when client disconnects - clear stale buffer state
-    // so a reconnecting client gets a clean start
-    if (stream->running) {
-      audio_buffer_flush(&state->buffer);
-      state->playout_started = false;
-      ESP_LOGI(TAG, "Buffered audio ready for new connection");
-    }
+    // Keep what is already decoded playing out; a new session's SETUP resets the buffer
+    if (stream->running) { ESP_LOGI(TAG, "Buffered audio ready for new connection"); }
   }
 
   state->buffered_task_handle = NULL;
@@ -182,8 +199,10 @@ static void buffered_stop(audio_stream_t* stream) {
     state->buffered_listen_socket = -1;
   }
 
+  // The task clears its handle on exit; it must be gone before its buffer is freed
+  for (int waited = 0; state->buffered_task_handle && waited < 2000; waited += 10) { vTaskDelay(pdMS_TO_TICKS(10)); }
   if (state->buffered_task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGW(TAG, "Buffered audio task did not exit in time");
     state->buffered_task_handle = NULL;
   }
 

@@ -216,6 +216,45 @@ void rtsp_stop_event_port_task(void) {
   }
 }
 
+// The connection whose session has the audio receiver and the event port task. iOS
+// opens extra connections (GET /info when the AirPlay picker opens) and a passenger's
+// phone may connect too: those must not touch the playing session. A connection takes
+// the session over when it sets up a stream.
+static rtsp_conn_t* session_owner = NULL;
+static portMUX_TYPE session_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void take_session(rtsp_conn_t* conn) {
+  portENTER_CRITICAL(&session_lock);
+  rtsp_conn_t* previous = session_owner;
+  session_owner = conn;
+  portEXIT_CRITICAL(&session_lock);
+
+  if (previous && previous != conn) {
+    ESP_LOGI(TAG, "New connection takes over the session");
+    rtsp_stop_event_port_task();
+    audio_receiver_stop();
+  }
+}
+
+bool rtsp_owns_session(const rtsp_conn_t* conn) {
+  portENTER_CRITICAL(&session_lock);
+  bool owner = conn && session_owner == conn;
+  portEXIT_CRITICAL(&session_lock);
+  return owner;
+}
+
+void rtsp_release_session(rtsp_conn_t* conn) {
+  portENTER_CRITICAL(&session_lock);
+  bool owner = conn && session_owner == conn;
+  if (owner) { session_owner = NULL; }
+  portEXIT_CRITICAL(&session_lock);
+
+  if (owner) {
+    rtsp_stop_event_port_task();
+    audio_receiver_stop();
+  }
+}
+
 // Forward declarations of handlers
 static void handle_options(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len);
 static void handle_get(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len);
@@ -499,6 +538,15 @@ static void handle_post(int socket, rtsp_conn_t* conn, const rtsp_request_t* req
   }
 }
 
+// Copy the request headers into a NUL-terminated string (raw is not terminated)
+static void copy_headers(const uint8_t* raw, size_t raw_len, char* out, size_t capacity) {
+  const uint8_t* header_end = rtsp_find_header_end(raw, raw_len);
+  size_t         header_len = header_end ? (size_t)(header_end - raw) : raw_len;
+  if (header_len >= capacity) { header_len = capacity - 1; }
+  memcpy(out, raw, header_len);
+  out[header_len] = '\0';
+}
+
 static void parse_sdp(rtsp_conn_t* conn, const char* sdp, size_t len) {
   (void)len;
 
@@ -586,7 +634,19 @@ static void handle_announce(int socket, rtsp_conn_t* conn, const rtsp_request_t*
   (void)raw;
   (void)raw_len;
 
-  if (req->body && req->body_len > 0) { parse_sdp(conn, (const char*)req->body, req->body_len); }
+  // AirPlay 1 session starts here
+  take_session(conn);
+
+  if (req->body && req->body_len > 0) {
+    // parse_sdp uses string functions, the body is not NUL-terminated
+    char* sdp = malloc(req->body_len + 1);
+    if (sdp) {
+      memcpy(sdp, req->body, req->body_len);
+      sdp[req->body_len] = '\0';
+      parse_sdp(conn, sdp, req->body_len);
+      free(sdp);
+    }
+  }
 
   rtsp_send_ok(socket, conn, req->cseq);
 }
@@ -597,6 +657,8 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
 
   const uint8_t* body = req->body;
   size_t         body_len = req->body_len;
+
+  take_session(conn);
 
   bool is_bplist = strstr(req->content_type, "application/x-apple-binary-plist") != NULL;
 
@@ -616,7 +678,9 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
     req->content_type);
 
   if (body && body_len > 0 && is_bplist && request_has_streams) {
-    for (size_t i = 0; i < stream_count; i++) {
+    // A SETUP has one or two streams; each lookup walks the plist, so don't let a
+    // bad count make this loop long
+    for (size_t i = 0; i < stream_count && i < 8; i++) {
       int64_t  stream_type = -1;
       uint16_t client_ctrl_port = 0;
       size_t   ekey_len = 0, eiv_len = 0, shk_len = 0;
@@ -636,7 +700,8 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
         int64_t          sample_rate = 44100;
         int64_t          samples_per_frame = 352;
 
-        if (bplist_get_stream_kv_info(body, body_len, i, kv, 16, &kv_count)) {
+        // Only stream 0 is played, a later entry must not replace its decoder
+        if (i == 0 && bplist_get_stream_kv_info(body, body_len, i, kv, 16, &kv_count)) {
           for (size_t k = 0; k < kv_count; k++) {
             if (kv[k].value_type == BPLIST_VALUE_INT) {
               if (strcmp(kv[k].key, "ct") == 0) {
@@ -737,11 +802,10 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
   // Create event port if needed
   if (conn->event_port == 0) {
     conn->event_socket = rtsp_create_event_socket(&conn->event_port);
-    if (conn->event_socket >= 0) {
-      rtsp_start_event_port_task(conn->event_socket);
-      ESP_LOGI(TAG, "SETUP: Created event port %u", conn->event_port);
-    }
+    if (conn->event_socket >= 0) { ESP_LOGI(TAG, "SETUP: Created event port %u", conn->event_port); }
   }
+  // Also after this connection lost and took back the session (no-op while running)
+  if (conn->event_socket >= 0) { rtsp_start_event_port_task(conn->event_socket); }
 
   // Handle initial SETUP vs stream SETUP
   if (!request_has_streams) {
@@ -801,7 +865,9 @@ static void handle_setup(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
     rtsp_send_response(socket, conn, 200, "OK", req->cseq, "Content-Type: application/x-apple-binary-plist\r\n", (const char*)plist_body, plist_len);
   } else {
     // AirPlay 1: Parse client's ports from Transport header
-    rtsp_parse_transport((const char*)raw, &conn->client_control_port, &conn->client_timing_port);
+    char headers[1024];
+    copy_headers(raw, raw_len, headers, sizeof(headers));
+    rtsp_parse_transport(headers, &conn->client_control_port, &conn->client_timing_port);
     ESP_LOGI(TAG, "Client ports: control=%u timing=%u", conn->client_control_port, conn->client_timing_port);
 
     char transport_response[256];
@@ -830,8 +896,10 @@ static void handle_record(int socket, rtsp_conn_t* conn, const rtsp_request_t* r
   (void)raw;
   (void)raw_len;
 
-  audio_receiver_set_client_addr(conn->client_ip, conn->client_control_port);
-  audio_receiver_start_stream(conn->data_port, conn->control_port, conn->buffered_port);
+  if (rtsp_owns_session(conn)) {
+    audio_receiver_set_client_addr(conn->client_ip, conn->client_control_port);
+    audio_receiver_start_stream(conn->data_port, conn->control_port, conn->buffered_port);
+  }
 
   const char* headers = "Audio-Latency: 0\r\nAudio-Jack-Status: connected\r\n";
 
@@ -862,7 +930,11 @@ static void handle_get_parameter(int socket, rtsp_conn_t* conn, const rtsp_reque
   (void)raw_len;
 
   if (req->body && req->body_len > 0) {
-    if (strstr((const char*)req->body, "volume")) {
+    char   text[64];
+    size_t text_len = req->body_len < sizeof(text) - 1 ? req->body_len : sizeof(text) - 1;
+    memcpy(text, req->body, text_len);
+    text[text_len] = '\0';
+    if (strstr(text, "volume")) {
       const char* vol_response = "volume: -12.00\r\n";
       rtsp_send_response(socket, conn, 200, "OK", req->cseq, "Content-Type: text/parameters\r\n", vol_response, strlen(vol_response));
       return;
@@ -876,17 +948,82 @@ static void handle_pause(int socket, rtsp_conn_t* conn, const rtsp_request_t* re
   (void)raw;
   (void)raw_len;
 
-  ESP_LOGI(TAG, "RTSP PAUSE received, flushing");
-  audio_receiver_flush();
+  if (rtsp_owns_session(conn)) {
+    ESP_LOGI(TAG, "RTSP PAUSE received, flushing");
+    audio_receiver_flush();
+  }
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
-static void handle_flush(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len) {
-  (void)raw;
-  (void)raw_len;
+// RTP-Info: seq=X;rtptime=Y gives the first timestamp of the audio after the flush
+static bool parse_rtp_info_rtptime(const uint8_t* raw, size_t raw_len, uint32_t* rtptime) {
+  char headers[1024];
+  copy_headers(raw, raw_len, headers, sizeof(headers));
 
-  ESP_LOGI(TAG, "RTSP FLUSH received, flushing");
-  audio_receiver_flush();
+  const char* info = strstr(headers, "RTP-Info:");
+  if (!info) { return false; }
+  const char* line_end = strstr(info, "\r\n");
+  const char* value = strstr(info, "rtptime=");
+  if (!value || (line_end && value > line_end)) { return false; }
+
+  *rtptime = (uint32_t)strtoul(value + 8, NULL, 10);
+  return true;
+}
+
+static void handle_flush(int socket, rtsp_conn_t* conn, const rtsp_request_t* req, const uint8_t* raw, size_t raw_len) {
+  const uint8_t* body = req->body;
+  size_t         body_len = req->body_len;
+
+  if (!rtsp_owns_session(conn)) {
+    rtsp_send_ok(socket, conn, req->cseq);
+    return;
+  }
+
+  if (strcasecmp(req->method, "FLUSHBUFFERED") == 0 && body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
+    int64_t until_seq = 0;
+    int64_t until_ts = 0;
+    int64_t from_seq = 0;
+    int64_t from_ts = 0;
+    bool    has_until =
+      bplist_find_int(body, body_len, "flushUntilSeq", &until_seq) && bplist_find_int(body, body_len, "flushUntilTS", &until_ts);
+    bool has_from =
+      bplist_find_int(body, body_len, "flushFromSeq", &from_seq) && bplist_find_int(body, body_len, "flushFromTS", &from_ts);
+
+    if (has_until) {
+      // With "from", the sender already sent audio past from that it wants replaced
+      // (e.g. next track changed) and current playback continues. While paused there
+      // is nothing to continue, so flush everything.
+      audio_flush_request_t request = {
+        .has_from = has_from && !conn->stream_paused,
+        .from_sequence = (uint32_t)from_seq,
+        .from_timestamp = (uint32_t)from_ts,
+        .until_sequence = (uint32_t)until_seq,
+        .until_timestamp = (uint32_t)until_ts,
+      };
+      ESP_LOGI(
+        TAG,
+        "FLUSHBUFFERED (%s) from seq %lu ts %lu until seq %lu ts %lu",
+        request.has_from ? "deferred" : "now",
+        (unsigned long)from_seq,
+        (unsigned long)from_ts,
+        (unsigned long)until_seq,
+        (unsigned long)until_ts);
+      audio_receiver_flush_buffered(&request);
+    } else {
+      ESP_LOGI(TAG, "FLUSHBUFFERED without flushUntil, flushing");
+      audio_receiver_flush();
+    }
+  } else {
+    uint32_t rtptime = 0;
+    if (parse_rtp_info_rtptime(raw, raw_len, &rtptime)) {
+      ESP_LOGI(TAG, "RTSP FLUSH until rtptime %lu", (unsigned long)rtptime);
+      audio_receiver_flush_until(rtptime);
+    } else {
+      ESP_LOGI(TAG, "RTSP FLUSH received, flushing");
+      audio_receiver_flush();
+    }
+  }
+
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
@@ -905,7 +1042,12 @@ static void handle_teardown(int socket, rtsp_conn_t* conn, const rtsp_request_t*
 
   // TEARDOWN with streams = stream teardown (may be followed by new SETUP)
   // TEARDOWN without streams = full session teardown (disconnect)
-  audio_receiver_stop();
+  // Either way only for the connection that has the session
+  if (!has_streams) {
+    rtsp_release_session(conn);
+  } else if (rtsp_owns_session(conn)) {
+    audio_receiver_stop();
+  }
   conn->stream_active = false;
   conn->stream_paused = has_streams; // Keep session ready if only streams torn down
 
@@ -934,7 +1076,7 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t* conn, const rtsp_r
 
   if (rate == 0.0) {
     conn->stream_paused = true;
-    audio_receiver_flush();
+    if (rtsp_owns_session(conn)) { audio_receiver_flush(); }
   } else {
     conn->stream_paused = false;
   }

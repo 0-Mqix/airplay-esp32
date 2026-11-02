@@ -4,7 +4,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "audio_receiver.h"
 
 rtsp_conn_t* rtsp_conn_create(void) {
   rtsp_conn_t* conn = calloc(1, sizeof(rtsp_conn_t));
@@ -46,8 +45,8 @@ void rtsp_conn_reset_stream(rtsp_conn_t* conn) {
 void rtsp_conn_cleanup(rtsp_conn_t* conn) {
   if (!conn) { return; }
 
-  // Stop audio receiver
-  audio_receiver_stop();
+  // Audio belongs to the session, not to every connection: stopped by
+  // rtsp_release_session when this connection had it
 
   // Close sockets
   if (conn->data_socket >= 0) {

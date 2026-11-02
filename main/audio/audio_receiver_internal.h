@@ -16,6 +16,28 @@
 
 #define MAX_RTP_PACKET_SIZE 2048
 
+// What a stream task drops after a flush. A flush only clears what was already
+// received; packets still in flight (socket buffers, TCP backlog) must be filtered.
+typedef enum {
+  FLUSH_FILTER_NONE = 0,
+  FLUSH_FILTER_UNTIL,        // Drop packets before the point the sender says new audio starts
+  FLUSH_FILTER_CONTINUATION, // Drop packets that continue the flushed stream, until expires_us
+} flush_filter_mode_t;
+
+typedef struct {
+  flush_filter_mode_t mode;
+  // UNTIL: compare 24-bit sequence numbers (buffered) instead of timestamps (realtime).
+  // Resent audio may reuse timestamps of stale packets, sequence numbers only go up.
+  bool     use_sequence;
+  bool     has_from; // UNTIL: packets before from are kept
+  uint32_t from_sequence;
+  uint32_t until_sequence;
+  uint32_t from_timestamp;
+  uint32_t until_timestamp;
+  uint32_t last_timestamp; // CONTINUATION: last timestamp of the flushed stream
+  int64_t  expires_us;     // Stop filtering after this time
+} flush_filter_t;
+
 typedef struct {
   audio_stream_t* stream;
   audio_stream_t* realtime_stream;
@@ -25,8 +47,6 @@ typedef struct {
   audio_buffer_t   buffer;
 
   audio_stats_t stats;
-
-  bool playout_started;
 
   int             data_socket;
   TaskHandle_t    task_handle;
@@ -50,13 +70,25 @@ typedef struct {
 
   uint64_t blocks_read;
 
-  uint32_t last_rtp_timestamp;
-  bool     rtp_timestamp_valid;
+  // Set by the reader while audio plays out (not while building the start buffer)
+  atomic_bool playout_running;
 
-  atomic_bool  flush_pending;
-  atomic_uint_least32_t flush_timestamp;
+  // Least free stack seen by the decoding tasks (bytes), for the stats log
+  uint32_t decode_stack_free;
+  uint32_t buffered_stack_free;
+
+  portMUX_TYPE   flush_lock;
+  flush_filter_t flush_filter;
 } audio_receiver_state_t;
 
-bool audio_stream_process_frame(audio_receiver_state_t* state, uint32_t timestamp, const uint8_t* audio_data, size_t audio_len);
+bool audio_stream_process_frame(
+  audio_receiver_state_t* state, uint32_t generation, uint32_t timestamp, const uint8_t* audio_data, size_t audio_len);
+
+/**
+ * Check a freshly received packet against the flush filter.
+ * @param sequence 24-bit sequence number (only used for buffered flushes)
+ * @return true when the packet belongs to flushed audio and must be dropped
+ */
+bool audio_stream_drop_flushed(audio_receiver_state_t* state, uint32_t sequence, uint32_t timestamp);
 
 static inline audio_receiver_state_t* audio_stream_state(audio_stream_t* stream) { return (audio_receiver_state_t*)stream->ctx; }

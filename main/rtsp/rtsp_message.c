@@ -73,21 +73,36 @@ int rtsp_request_parse(const uint8_t* data, size_t len, rtsp_request_t* req) {
   const uint8_t* header_end = rtsp_find_header_end(data, len);
   if (!header_end) { return -1; }
 
+  // The request is not NUL-terminated and the body is binary: parse the headers
+  // from a terminated copy so the string functions stop at the header end
+  size_t header_len = (size_t)(header_end - data);
+  char*  headers = malloc(header_len + 1);
+  if (!headers) { return -1; }
+  memcpy(headers, data, header_len);
+  headers[header_len] = '\0';
+
   // Parse first line: METHOD PATH PROTOCOL
-  if (sscanf((const char*)data, "%31s %255s", req->method, req->path) < 1) { return -1; }
+  if (sscanf(headers, "%31s %255s", req->method, req->path) < 1) {
+    free(headers);
+    return -1;
+  }
 
   // Parse CSeq
-  req->cseq = rtsp_parse_cseq((const char*)data);
+  req->cseq = rtsp_parse_cseq(headers);
 
   // Parse Content-Length
-  req->content_length = (size_t)rtsp_parse_content_length((const char*)data);
+  req->content_length = (size_t)rtsp_parse_content_length(headers);
 
   // Parse Content-Type
-  const char* ct = strstr((const char*)data, "Content-Type:");
+  const char* ct = strstr(headers, "Content-Type:");
   if (ct) { sscanf(ct, "Content-Type: %63s", req->content_type); }
 
-  // Get body
-  req->body = rtsp_get_body((const char*)data, len, &req->body_len);
+  free(headers);
+
+  // Body follows the blank line
+  req->body = header_end + 4;
+  req->body_len = len - header_len - 4;
+  if (req->body_len == 0) { req->body = NULL; }
 
   return 0;
 }

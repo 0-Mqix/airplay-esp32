@@ -109,9 +109,32 @@ size_t audio_receiver_read(int16_t* buffer, size_t samples);
 bool audio_receiver_has_data(void);
 
 /**
- * Flush audio buffer (increment generation, drain ring buffer)
+ * Flush everything received so far (pause, stop). Packets still in flight that
+ * continue the flushed stream are dropped for a short while after.
  */
 void audio_receiver_flush(void);
+
+/**
+ * Flush everything and drop incoming packets with a timestamp before until_timestamp
+ * (realtime FLUSH with RTP-Info rtptime).
+ */
+void audio_receiver_flush_until(uint32_t until_timestamp);
+
+// FLUSHBUFFERED parameters (sequence numbers are the 24-bit buffered packet numbers)
+typedef struct {
+  bool     has_from;
+  uint32_t from_sequence;
+  uint32_t from_timestamp;
+  uint32_t until_sequence;
+  uint32_t until_timestamp;
+} audio_flush_request_t;
+
+/**
+ * Buffered flush. Without "from": flush everything and drop incoming packets before
+ * until_sequence. With "from": drop [from, until) but keep playing what comes before,
+ * unless playback is already at or close to from (then it is done right away).
+ */
+void audio_receiver_flush_buffered(const audio_flush_request_t* request);
 
 /**
  * Get current audio generation counter (for stale data detection)
@@ -143,6 +166,21 @@ uint16_t audio_receiver_get_buffered_port(void);
  * Get number of decoded frames currently in the PCM ring buffer
  */
 int audio_receiver_get_buffered_frames(void);
+
+/**
+ * Get the duration of decoded audio currently in the PCM ring buffer, in ms
+ */
+int audio_receiver_get_buffered_ms(void);
+
+/**
+ * Get the sample rate of the current stream
+ */
+int audio_receiver_get_sample_rate(void);
+
+/**
+ * Get the least free stack (bytes) seen by the realtime decode and buffered tasks
+ */
+void audio_receiver_get_stack_free(uint32_t* decode, uint32_t* buffered);
 
 /**
  * Stop only the buffered receiver but keep playing buffered data

@@ -1,7 +1,7 @@
 #pragma once
 
 // Device name shown in AirPlay
-#define CONFIG_DEVICE_NAME "Volvo"
+#define CONFIG_DEVICE_NAME "Opel"
 
 // WiFi password to try on all discovered networks
 #define CONFIG_WIFI_PASSWORD "tweaker!"
@@ -11,10 +11,17 @@
 #define CONFIG_I2S_DATA_PIN 13
 #define CONFIG_I2S_LRCK_PIN 12
 
+// Audio buffering (there is no clock sync with the phone, so these set the latency)
+// Realtime (UDP): audio buffered before playback starts, and the level held during playback
+#define CONFIG_REALTIME_BUFFER_MS 500
+// Buffered (TCP): audio needed before playback starts; the phone sends far ahead after that
+#define CONFIG_BUFFERED_START_MS 300
+
 // WiFi AP settings
-#define CONFIG_WIFI_CHANNEL  1  // Channel 1, 6, or 11 for least overlap
-#define CONFIG_WIFI_MAX_CONN 2  // Fewer clients = more bandwidth per client
-#define CONFIG_WIFI_TX_POWER 52 // 13 dBm (52 quarter-dBm) - safe for all modules
+#define CONFIG_WIFI_CHANNEL       0    // 0 = scan at boot and pick the least busy of 1, 6, 11
+#define CONFIG_WIFI_MAX_CONN      2    // One phone, plus room for its ghost after it left without saying so
+#define CONFIG_WIFI_TX_POWER      52   // 13 dBm (52 quarter-dBm) - safe for all modules
+#define CONFIG_WIFI_INACTIVE_TIME 3600 // Seconds without a packet before a phone is dropped
 
 // =============================================================================
 // Task Configuration
@@ -36,12 +43,13 @@
 // Audio decode - CPU-intensive ALAC decode on Core 1, below playback
 #define TASK_DECODE_CORE     1
 #define TASK_DECODE_PRIORITY 18
-#define TASK_DECODE_STACK    8192
+#define TASK_DECODE_STACK    12288
 
-// Buffered audio (TCP streaming)
+// Buffered audio (TCP streaming). Decodes AAC/ALAC in this task: how deep the decoder
+// goes depends on the song, 4 KB overflowed on some songs
 #define TASK_BUFFERED_CORE     0
 #define TASK_BUFFERED_PRIORITY 17
-#define TASK_BUFFERED_STACK    4096
+#define TASK_BUFFERED_STACK    16384
 
 // RTSP server
 #define TASK_RTSP_SERVER_CORE     0

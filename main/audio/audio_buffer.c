@@ -9,15 +9,33 @@
 
 static const char* TAG = "audio_buf";
 
-static void audio_buffer_adjust_frames(audio_buffer_t* buffer, int delta) {
+// How long a producer waits for ring space before dropping a frame. The ring holds ~16 s,
+// so it only fills when the buffered sender runs far ahead; waiting gives TCP backpressure.
+#define QUEUE_WAIT_SLICE_MS 100
+#define QUEUE_WAIT_MAX_MS   2000
+
+static void audio_buffer_adjust(audio_buffer_t* buffer, int frames, int samples) {
   portENTER_CRITICAL(&buffer->lock);
-  buffer->buffered_frames += delta;
+  buffer->buffered_frames += frames;
+  buffer->buffered_samples += samples;
   if (buffer->buffered_frames < 0) { buffer->buffered_frames = 0; }
+  if (buffer->buffered_samples < 0) { buffer->buffered_samples = 0; }
   portEXIT_CRITICAL(&buffer->lock);
 }
 
-static bool
-audio_buffer_queue_chunk(audio_buffer_t* buffer, audio_stats_t* stats, uint32_t timestamp, const int16_t* pcm_data, size_t samples, int channels) {
+static int audio_buffer_item_samples(const void* item, size_t item_size) {
+  if (item_size < sizeof(audio_frame_header_t)) { return 0; }
+  return ((const audio_frame_header_t*)item)->samples_per_channel;
+}
+
+static bool audio_buffer_queue_chunk(
+  audio_buffer_t* buffer,
+  audio_stats_t*  stats,
+  uint32_t        generation,
+  uint32_t        timestamp,
+  const int16_t*  pcm_data,
+  size_t          samples,
+  int             channels) {
   if (samples == 0) { return false; }
 
   audio_frame_header_t* hdr = (audio_frame_header_t*)buffer->frame_buffer;
@@ -25,7 +43,7 @@ audio_buffer_queue_chunk(audio_buffer_t* buffer, audio_stats_t* stats, uint32_t 
   hdr->samples_per_channel = (uint16_t)samples;
   hdr->channels = (uint8_t)channels;
   hdr->reserved = 0;
-  hdr->generation = audio_receiver_get_generation();
+  hdr->generation = generation;
 
   size_t   pcm_bytes = samples * channels * sizeof(int16_t);
   int16_t* dest = (int16_t*)(hdr + 1);
@@ -33,16 +51,27 @@ audio_buffer_queue_chunk(audio_buffer_t* buffer, audio_stats_t* stats, uint32_t 
 
   size_t total_bytes = sizeof(*hdr) + pcm_bytes;
 
-  BaseType_t ret = xRingbufferSend(buffer->ring, buffer->frame_buffer, total_bytes, pdMS_TO_TICKS(100));
+  // Count the frame before it becomes visible, so a concurrent take/flush never
+  // decrements a frame that was not counted yet
+  audio_buffer_adjust(buffer, 1, (int)samples);
+
+  BaseType_t ret = pdFALSE;
+  for (int waited = 0; waited < QUEUE_WAIT_MAX_MS; waited += QUEUE_WAIT_SLICE_MS) {
+    ret = xRingbufferSend(buffer->ring, buffer->frame_buffer, total_bytes, pdMS_TO_TICKS(QUEUE_WAIT_SLICE_MS));
+    if (ret == pdTRUE || generation != audio_receiver_get_generation()) { break; }
+  }
+
   if (ret != pdTRUE) {
-    ESP_LOGW(TAG, "OVERRUN ring full, dropping frame ts=%lu samples=%u frames_buffered=%d",
-             (unsigned long)timestamp, (unsigned)samples, buffer->buffered_frames);
-    if (stats) { stats->buffer_underruns++; }
+    audio_buffer_adjust(buffer, -1, -(int)samples);
+    if (generation == audio_receiver_get_generation()) {
+      ESP_LOGW(
+        TAG, "OVERRUN ring full, dropping frame ts=%lu samples=%u frames_buffered=%d", (unsigned long)timestamp, (unsigned)samples, buffer->buffered_frames);
+      if (stats) { stats->buffer_underruns++; }
+    }
     return false;
   }
 
   if (stats) { stats->packets_decoded++; }
-  audio_buffer_adjust_frames(buffer, 1);
   return true;
 }
 
@@ -52,6 +81,7 @@ esp_err_t audio_buffer_init(audio_buffer_t* buffer) {
   portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
   buffer->lock = lock;
   buffer->buffered_frames = 0;
+  buffer->buffered_samples = 0;
 
   buffer->ring = xRingbufferCreateWithCaps(AUDIO_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!buffer->ring) {
@@ -96,19 +126,21 @@ void audio_buffer_deinit(audio_buffer_t* buffer) {
   }
 
   buffer->buffered_frames = 0;
+  buffer->buffered_samples = 0;
 }
 
 void audio_buffer_flush(audio_buffer_t* buffer) {
   if (!buffer || !buffer->ring) { return; }
 
-  // Zero-copy drain: receive pointer + return, no data copying
+  // Zero-copy drain: receive pointer + return, no data copying. Counts are
+  // decremented per item so frames a producer is queueing right now stay counted.
   size_t bytes_read = 0;
   void*  data = NULL;
-  while ((data = xRingbufferReceive(buffer->ring, &bytes_read, 0)) != NULL) { vRingbufferReturnItem(buffer->ring, data); }
-
-  portENTER_CRITICAL(&buffer->lock);
-  buffer->buffered_frames = 0;
-  portEXIT_CRITICAL(&buffer->lock);
+  while ((data = xRingbufferReceive(buffer->ring, &bytes_read, 0)) != NULL) {
+    int samples = audio_buffer_item_samples(data, bytes_read);
+    vRingbufferReturnItem(buffer->ring, data);
+    audio_buffer_adjust(buffer, -1, -samples);
+  }
 }
 
 int audio_buffer_get_frame_count(audio_buffer_t* buffer) {
@@ -121,13 +153,23 @@ int audio_buffer_get_frame_count(audio_buffer_t* buffer) {
   return frames;
 }
 
+int audio_buffer_get_sample_count(audio_buffer_t* buffer) {
+  if (!buffer) { return 0; }
+
+  int samples = 0;
+  portENTER_CRITICAL(&buffer->lock);
+  samples = buffer->buffered_samples;
+  portEXIT_CRITICAL(&buffer->lock);
+  return samples;
+}
+
 bool audio_buffer_take(audio_buffer_t* buffer, void** item, size_t* item_size, TickType_t ticks) {
   if (!buffer || !buffer->ring || !item || !item_size) { return false; }
 
   *item = xRingbufferReceive(buffer->ring, item_size, ticks);
   if (!*item) { return false; }
 
-  audio_buffer_adjust_frames(buffer, -1);
+  audio_buffer_adjust(buffer, -1, -audio_buffer_item_samples(*item, *item_size));
   return true;
 }
 
@@ -147,6 +189,7 @@ int16_t* audio_buffer_get_decode_buffer(audio_buffer_t* buffer, size_t* capacity
 bool audio_buffer_queue_decoded(
   audio_buffer_t* buffer,
   audio_stats_t*  stats,
+  uint32_t        generation,
   uint32_t        timestamp,
   const int16_t*  pcm_data,
   size_t          samples,
@@ -162,7 +205,9 @@ bool audio_buffer_queue_decoded(
     size_t chunk_samples = samples - offset;
     if (chunk_samples > AAC_FRAMES_PER_PACKET) { chunk_samples = AAC_FRAMES_PER_PACKET; }
 
-    if (!audio_buffer_queue_chunk(buffer, stats, chunk_timestamp, pcm_data + (offset * channels), chunk_samples, channels)) { return false; }
+    if (!audio_buffer_queue_chunk(buffer, stats, generation, chunk_timestamp, pcm_data + (offset * channels), chunk_samples, channels)) {
+      return false;
+    }
 
     offset += chunk_samples;
     chunk_timestamp += chunk_samples;

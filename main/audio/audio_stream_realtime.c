@@ -14,23 +14,33 @@
 #include "config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/ringbuf.h"
 #include "network/socket_utils.h"
 
 #define RTP_HEADER_SIZE 12
 
-// Reorder buffer: holds packets for short-term reordering and retransmit recovery
-#define REORDER_SLOTS       400
-#define REORDER_DELAY       200  // ~1.6s buffer depth before draining starts
-#define REORDER_MAX_PAYLOAD 1500
+// Reorder buffer: in-order packets go straight through, a missing packet holds the ones
+// behind it until the retransmit arrives or it is too old, then it becomes silence.
+// The wait is timed from when the gap is noticed: after a loss burst the packets behind
+// it arrive at once, and the retransmits need a round trip on top. A burst plus the
+// wait must stay below the playback buffer (CONFIG_REALTIME_BUFFER_MS).
+#define REORDER_SLOTS          128
+#define REORDER_MAX_WAIT_US    120000 // Wait for a missing packet's retransmit
+#define REORDER_MAX_WAIT       100    // Packets, never hold more than this (slots run out)
+#define REORDER_MIN_BUFFER_MS  100    // Stop waiting when playback has less than this left
+#define REORDER_RETRY_INTERVAL 8      // Packets between retransmit requests while waiting
+#define REORDER_START_HOLD     4  // Packets held at the start so the first ones may arrive swapped
+#define REORDER_MAX_PAYLOAD    MAX_RTP_PACKET_SIZE // Never truncate a frame before the decoder
 
 // Decode ring buffer: compressed frames queued from recv task to decode task
-// Each item: 6-byte header + up to 1500 bytes payload ≈ 1506 bytes
+// Each item: 10-byte header + payload (ALAC frames are ~1.4 KB at most)
 // 512KB on PSRAM gives ~340 items of headroom
 #define DECODE_RING_SIZE (512 * 1024)
 
 typedef struct __attribute__((packed)) {
   uint32_t timestamp;
+  uint32_t generation;
   uint16_t len;  // 0 = silence marker
 } decode_item_header_t;
 
@@ -55,6 +65,11 @@ typedef struct {
   uint16_t       next_seq;
   uint16_t       highest_seq;
   bool           initialized;
+  bool           holding;        // Start of the stream: nothing passed on yet
+  uint32_t       next_timestamp; // Expected timestamp of next_seq, for silence in its place
+  uint32_t       generation;     // Flush generation the buffered packets belong to
+  uint16_t       wait_packets;   // Packets received while next_seq is missing
+  int64_t        missing_since_us;
 } reorder_buffer_t;
 
 static const char* TAG = "audio_rt";
@@ -64,12 +79,13 @@ static int16_t          silence_samples[1024 * 2] = {0};
 static uint32_t         reorder_drain_count = 0;
 static uint32_t         reorder_silence_count = 0;
 static uint32_t         reorder_gap_count = 0;
-static uint32_t         reorder_force_drain_count = 0;
+static uint32_t         reorder_resync_count = 0;
 static uint32_t         retransmit_recovered_count = 0;
 
 static void reorder_reset(void) {
   if (!reorder.slots) {
-    reorder.slots = calloc(REORDER_SLOTS, sizeof(reorder_slot_t));
+    reorder.slots = heap_caps_calloc(REORDER_SLOTS, sizeof(reorder_slot_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!reorder.slots) { reorder.slots = calloc(REORDER_SLOTS, sizeof(reorder_slot_t)); }
     if (!reorder.slots) {
       ESP_LOGE(TAG, "Failed to allocate reorder buffer (%u bytes)", (unsigned)(REORDER_SLOTS * sizeof(reorder_slot_t)));
       return;
@@ -80,6 +96,7 @@ static void reorder_reset(void) {
   reorder.next_seq = 0;
   reorder.highest_seq = 0;
   reorder.initialized = false;
+  reorder.wait_packets = 0;
 }
 
 // ============================================================================
@@ -144,7 +161,7 @@ static void send_retransmit_request(audio_receiver_state_t* state, uint16_t firs
 }
 
 // Forward declaration
-static void reorder_insert(audio_stream_t* stream, uint16_t seq, uint32_t timestamp, const uint8_t* data, size_t len);
+static void reorder_insert(audio_stream_t* stream, uint16_t seq, uint32_t timestamp, const uint8_t* data, size_t len, bool retransmit);
 
 // ============================================================================
 // Retransmit response handling (control port)
@@ -187,27 +204,31 @@ static void process_control_packet(audio_stream_t* stream, uint8_t* packet, int 
     audio_len = (size_t)decrypted_len;
   }
 
-  retransmit_recovered_count++;
-  reorder_insert(stream, seq, timestamp, audio_data, audio_len);
+  reorder_insert(stream, seq, timestamp, audio_data, audio_len, true);
 }
 
 // ============================================================================
 // Silence insertion for unrecoverable packet loss
 // ============================================================================
 
-static void insert_silence(audio_receiver_state_t* state, uint32_t timestamp) {
+static uint32_t reorder_frame_size(audio_receiver_state_t* state) {
   int frame_size = state->stream->format.frame_size > 0 ? state->stream->format.frame_size : 352;
-  int channels = state->stream->format.channels > 0 ? state->stream->format.channels : 2;
   if (frame_size > 1024) { frame_size = 1024; }
+  return (uint32_t)frame_size;
+}
 
-  audio_buffer_queue_decoded(&state->buffer, NULL, timestamp, silence_samples, (size_t)frame_size, channels);
+static void insert_silence(audio_receiver_state_t* state, uint32_t generation, uint32_t timestamp) {
+  int channels = state->stream->format.channels > 0 ? state->stream->format.channels : 2;
+
+  audio_buffer_queue_decoded(&state->buffer, NULL, generation, timestamp, silence_samples, reorder_frame_size(state), channels);
 }
 
 // Send a compressed frame (or silence marker) to the decode ring buffer
-static bool decode_ring_send(audio_receiver_state_t* state, uint32_t timestamp, const uint8_t* data, uint16_t len) {
+static bool
+decode_ring_send(audio_receiver_state_t* state, uint32_t generation, uint32_t timestamp, const uint8_t* data, uint16_t len) {
   if (!state->decode_ring) { return false; }
 
-  decode_item_header_t hdr = {.timestamp = timestamp, .len = len};
+  decode_item_header_t hdr = {.timestamp = timestamp, .generation = generation, .len = len};
   size_t               item_size = sizeof(hdr) + len;
   uint8_t              buf[sizeof(decode_item_header_t) + REORDER_MAX_PAYLOAD];
 
@@ -222,83 +243,95 @@ static bool decode_ring_send(audio_receiver_state_t* state, uint32_t timestamp, 
   return true;
 }
 
-// Send a silence marker to the decode ring (len=0)
-static bool decode_ring_send_silence(audio_receiver_state_t* state, uint32_t timestamp) {
-  return decode_ring_send(state, timestamp, NULL, 0);
-}
-
 // ============================================================================
 // Reorder buffer operations
 // ============================================================================
 
+// Pass on every packet that is ready, in sequence order. A missing packet holds the
+// ones behind it until its retransmit arrives or REORDER_MAX_WAIT newer packets came in.
 static void reorder_drain(audio_receiver_state_t* state) {
-  while ((int16_t)(reorder.highest_seq - reorder.next_seq) >= REORDER_DELAY) {
-    int             idx = reorder.next_seq % REORDER_SLOTS;
-    reorder_slot_t* slot = &reorder.slots[idx];
+  uint32_t frame_size = reorder_frame_size(state);
+
+  if (reorder.holding) {
+    if ((int16_t)(reorder.highest_seq - reorder.next_seq) < REORDER_START_HOLD) { return; }
+    reorder.holding = false;
+  }
+
+  while ((int16_t)(reorder.highest_seq - reorder.next_seq) >= 0) {
+    reorder_slot_t* slot = &reorder.slots[reorder.next_seq % REORDER_SLOTS];
 
     if (slot->occupied && slot->seq == reorder.next_seq) {
-      decode_ring_send(state, slot->timestamp, slot->data, slot->len);
+      decode_ring_send(state, reorder.generation, slot->timestamp, slot->data, slot->len);
+      reorder.next_timestamp = slot->timestamp + frame_size;
       slot->occupied = false;
       reorder_drain_count++;
-      reorder.next_seq++;
     } else {
-      // Still missing — retry NACK and stop draining to give it more time.
-      // It will become silence only when force-drained (buffer full).
-      send_retransmit_request(state, reorder.next_seq, 1);
-      break;
-    }
-  }
-}
+      int64_t now = esp_timer_get_time();
+      if (reorder.wait_packets == 0) { reorder.missing_since_us = now; }
 
-static void reorder_force_drain_to(audio_receiver_state_t* state, uint16_t target_seq) {
-  int      frame_size = state->stream->format.frame_size > 0 ? state->stream->format.frame_size : 352;
-  uint32_t est_ts = state->stats.last_timestamp;
+      // While audio plays out, waiting longer than the buffer lasts turns one lost
+      // packet into an underrun and a rebuffer
+      int  sample_rate = state->stream->format.sample_rate > 0 ? state->stream->format.sample_rate : 44100;
+      bool buffer_low = atomic_load(&state->playout_running) &&
+                        audio_buffer_get_sample_count(&state->buffer) < sample_rate * REORDER_MIN_BUFFER_MS / 1000;
 
-  while ((int16_t)(target_seq - reorder.next_seq) > 0) {
-    int             idx = reorder.next_seq % REORDER_SLOTS;
-    reorder_slot_t* slot = &reorder.slots[idx];
+      if (!buffer_low && now - reorder.missing_since_us < REORDER_MAX_WAIT_US &&
+          (int16_t)(reorder.highest_seq - reorder.next_seq) < REORDER_MAX_WAIT) {
+        // Still missing: wait, and ask again every few packets
+        reorder.wait_packets++;
+        if (reorder.wait_packets % REORDER_RETRY_INTERVAL == 0) { send_retransmit_request(state, reorder.next_seq, 1); }
+        return;
+      }
 
-    if (slot->occupied && slot->seq == reorder.next_seq) {
-      decode_ring_send(state, slot->timestamp, slot->data, slot->len);
-      est_ts = slot->timestamp;
-      slot->occupied = false;
-    } else {
-      est_ts += (uint32_t)frame_size;
-      decode_ring_send_silence(state, est_ts);
+      // The retransmit is not coming in time: play silence in its place
+      decode_ring_send(state, reorder.generation, reorder.next_timestamp, NULL, 0);
+      reorder.next_timestamp += frame_size;
+      reorder_silence_count++;
       state->stats.packets_dropped++;
     }
+
     reorder.next_seq++;
+    reorder.wait_packets = 0;
   }
 }
 
-static void
-reorder_insert(audio_stream_t* stream, uint16_t seq, uint32_t timestamp, const uint8_t* data, size_t len) {
-  audio_receiver_state_t* state = audio_stream_state(stream);
+static void reorder_start(uint16_t seq, uint32_t timestamp) {
+  reorder.next_seq = seq;
+  reorder.highest_seq = seq;
+  reorder.next_timestamp = timestamp;
+  reorder.initialized = true;
+  reorder.holding = true;
+}
 
-  // On flush, reset reorder buffer and drain decode ring so stale data doesn't linger
-  if (atomic_load(&state->flush_pending)) {
-    reorder_reset();
-    // Drain stale compressed frames from decode ring
-    if (state->decode_ring) {
-      size_t sz = 0;
-      void*  stale = NULL;
-      while ((stale = xRingbufferReceive(state->decode_ring, &sz, 0)) != NULL) {
-        vRingbufferReturnItem(state->decode_ring, stale);
-      }
-    }
-    audio_buffer_flush(&state->buffer);
-    atomic_store(&state->flush_pending, false);
-  }
+static void reorder_insert(
+  audio_stream_t* stream, uint16_t seq, uint32_t timestamp, const uint8_t* data, size_t len, bool retransmit) {
+  audio_receiver_state_t* state = audio_stream_state(stream);
 
   if (!reorder.slots) { return; }
 
+  // After a flush, forget the packets of the old stream
+  uint32_t generation = audio_receiver_get_generation();
+  if (generation != reorder.generation) {
+    reorder_reset();
+    reorder.generation = generation;
+  }
+
+  if (!retransmit && audio_stream_drop_flushed(state, seq, timestamp)) { return; }
+
   if (!reorder.initialized) {
-    reorder.next_seq = seq;
-    reorder.highest_seq = seq;
-    reorder.initialized = true;
+    // Only a fresh packet starts the sequence, a retransmit may be from before a flush
+    if (retransmit) { return; }
+    reorder_start(seq, timestamp);
   }
 
   int16_t diff = (int16_t)(seq - reorder.next_seq);
+
+  if (diff < 0 && reorder.holding && diff > -REORDER_SLOTS / 2 && !retransmit) {
+    // Arrived after a later packet at the start of the stream: start from this one
+    reorder.next_seq = seq;
+    reorder.next_timestamp = timestamp;
+    diff = 0;
+  }
 
   if (diff < 0) {
     // Late arrival — already moved past this sequence
@@ -308,10 +341,12 @@ reorder_insert(audio_stream_t* stream, uint16_t seq, uint32_t timestamp, const u
   }
 
   if (diff >= REORDER_SLOTS) {
-    // Too far ahead — force drain to make room, inserting silence for gaps
-    reorder_force_drain_count++;
-    reorder_force_drain_to(state, (uint16_t)(seq - REORDER_SLOTS + 1));
-    diff = (int16_t)(seq - reorder.next_seq);
+    // Sequence jumped (long outage or sender restart). Start over at this packet instead
+    // of queueing seconds of silence; playback rebuffers if it ran dry meanwhile.
+    if (retransmit) { return; }
+    reorder_resync_count++;
+    reorder_reset();
+    reorder_start(seq, timestamp);
   }
 
   // Request retransmit only for actual gaps (between highest seen and this packet)
@@ -326,17 +361,19 @@ reorder_insert(audio_stream_t* stream, uint16_t seq, uint32_t timestamp, const u
   // Store in slot
   int             idx = seq % REORDER_SLOTS;
   reorder_slot_t* slot = &reorder.slots[idx];
-  size_t          copy_len = len < REORDER_MAX_PAYLOAD ? len : REORDER_MAX_PAYLOAD;
+  if (slot->occupied && slot->seq == seq) { return; } // Duplicate
+  if (retransmit) { retransmit_recovered_count++; }
+
+  size_t copy_len = len < REORDER_MAX_PAYLOAD ? len : REORDER_MAX_PAYLOAD;
   memcpy(slot->data, data, copy_len);
   slot->len = (uint16_t)copy_len;
   slot->seq = seq;
   slot->timestamp = timestamp;
   slot->occupied = true;
 
-  // Track highest sequence for delay calculation
+  // Track highest sequence for the wait limit
   if ((int16_t)(seq - reorder.highest_seq) > 0) { reorder.highest_seq = seq; }
 
-  // Drain packets that have waited long enough
   reorder_drain(state);
 }
 
@@ -394,8 +431,8 @@ realtime_receive_packet(audio_stream_t* stream, uint8_t* packet, struct sockaddr
     audio_len = (size_t)decrypted_len;
   }
 
-  // Insert into reorder buffer — handles sequencing, retransmit, and silence
-  reorder_insert(stream, seq, timestamp, audio_data, audio_len);
+  // Insert into reorder buffer — handles flush filtering, sequencing, retransmit, and silence
+  reorder_insert(stream, seq, timestamp, audio_data, audio_len, false);
 
   return true;
 }
@@ -403,6 +440,22 @@ realtime_receive_packet(audio_stream_t* stream, uint8_t* packet, struct sockaddr
 // ============================================================================
 // Decode task: pulls compressed frames from decode_ring, decodes, queues PCM
 // ============================================================================
+
+static void decode_item(audio_receiver_state_t* state, const void* item, size_t item_size) {
+  if (item_size < sizeof(decode_item_header_t)) { return; }
+
+  decode_item_header_t hdr;
+  memcpy(&hdr, item, sizeof(hdr));
+
+  if (hdr.generation != audio_receiver_get_generation()) {
+    // Queued before a flush, skip without decoding
+  } else if (hdr.len > 0) {
+    const uint8_t* payload = (const uint8_t*)item + sizeof(decode_item_header_t);
+    audio_stream_process_frame(state, hdr.generation, hdr.timestamp, payload, hdr.len);
+  } else {
+    insert_silence(state, hdr.generation, hdr.timestamp);
+  }
+}
 
 static void decode_task(void* pvParameters) {
   audio_stream_t*         stream = (audio_stream_t*)pvParameters;
@@ -413,22 +466,9 @@ static void decode_task(void* pvParameters) {
     void*  item = xRingbufferReceive(state->decode_ring, &item_size, pdMS_TO_TICKS(100));
     if (!item) { continue; }
 
-    if (item_size < sizeof(decode_item_header_t)) {
-      vRingbufferReturnItem(state->decode_ring, item);
-      continue;
-    }
-
-    decode_item_header_t hdr;
-    memcpy(&hdr, item, sizeof(hdr));
-
-    if (hdr.len > 0) {
-      const uint8_t* payload = (const uint8_t*)item + sizeof(decode_item_header_t);
-      audio_stream_process_frame(state, hdr.timestamp, payload, hdr.len);
-    } else {
-      insert_silence(state, hdr.timestamp);
-    }
-
+    decode_item(state, item, item_size);
     vRingbufferReturnItem(state->decode_ring, item);
+    state->decode_stack_free = uxTaskGetStackHighWaterMark(NULL);
   }
 
   state->decode_task_handle = NULL;
@@ -446,6 +486,7 @@ static void receiver_task(void* pvParameters) {
   uint8_t* packet = (uint8_t*)malloc(MAX_RTP_PACKET_SIZE);
   if (!packet) {
     ESP_LOGE(TAG, "Failed to allocate packet buffer");
+    state->task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
@@ -605,15 +646,14 @@ static void realtime_stop(audio_stream_t* stream) {
     state->control_socket = -1;
   }
 
-  // Wait for recv task to exit
-  if (state->task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(200));
-    state->task_handle = NULL;
+  // Both tasks clear their handle on exit; they must be gone before the decode ring is
+  // deleted. The recv task may sit in select() for up to 2 s.
+  for (int waited = 0; (state->task_handle || state->decode_task_handle) && waited < 2500; waited += 10) {
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
-
-  // Wait for decode task to exit
-  if (state->decode_task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(200));
+  if (state->task_handle || state->decode_task_handle) {
+    ESP_LOGW(TAG, "Realtime audio tasks did not exit in time");
+    state->task_handle = NULL;
     state->decode_task_handle = NULL;
   }
 
@@ -638,13 +678,13 @@ static void realtime_destroy(audio_stream_t* stream) {
   free(stream);
 }
 
-void audio_realtime_get_reorder_stats(uint32_t* ok, uint32_t* sil, uint32_t* gap, uint32_t* fdrain, uint32_t* recovered, int* buf_depth) {
+void audio_realtime_get_reorder_stats(uint32_t* ok, uint32_t* sil, uint32_t* gap, uint32_t* resync, uint32_t* recovered, int* buf_depth) {
   if (ok) { *ok = reorder_drain_count; }
   if (sil) { *sil = reorder_silence_count; }
   if (gap) { *gap = reorder_gap_count; }
-  if (fdrain) { *fdrain = reorder_force_drain_count; }
+  if (resync) { *resync = reorder_resync_count; }
   if (recovered) { *recovered = retransmit_recovered_count; }
-  if (buf_depth) { *buf_depth = reorder.initialized ? (int16_t)(reorder.highest_seq - reorder.next_seq) : 0; }
+  if (buf_depth) { *buf_depth = reorder.initialized ? (int16_t)(reorder.highest_seq - reorder.next_seq) + 1 : 0; }
 }
 
 const audio_stream_ops_t audio_stream_realtime_ops = {

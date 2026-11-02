@@ -65,7 +65,8 @@ void rtsp_conn_reset_stream(rtsp_conn_t* conn);
 
 /**
  * Full cleanup when connection closes
- * Stops audio, closes sockets, clears PTP
+ * Closes this connection's sockets and resets its stream state. Audio is stopped by
+ * rtsp_release_session (only when this connection had the session).
  */
 void rtsp_conn_cleanup(rtsp_conn_t* conn);
 

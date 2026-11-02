@@ -22,6 +22,27 @@
 
 static i2s_chan_handle_t tx_handle;
 static TaskHandle_t      playback_task_handle = NULL;
+static uint32_t          output_rate = SAMPLE_RATE;
+
+// Switch the I2S clock when a stream with another sample rate starts (e.g. 48 kHz).
+// Only called while outputting silence.
+static void follow_sample_rate(void) {
+  uint32_t rate = (uint32_t)audio_receiver_get_sample_rate();
+  if (rate == output_rate || rate < 8000 || rate > 96000) { return; }
+
+  i2s_std_clk_config_t clock_config = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+  clock_config.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+
+  i2s_channel_disable(tx_handle);
+  if (i2s_channel_reconfig_std_clock(tx_handle, &clock_config) == ESP_OK) {
+    ESP_LOGI(TAG, "Output sample rate %lu Hz", (unsigned long)rate);
+  } else {
+    ESP_LOGW(TAG, "Failed to set output sample rate %lu Hz", (unsigned long)rate);
+  }
+  // Don't retry every frame if the rate is not supported
+  output_rate = rate;
+  i2s_channel_enable(tx_handle);
+}
 
 // Playback stats — reset on each playout start
 static volatile uint32_t play_frames = 0;
@@ -39,6 +60,29 @@ static void apply_volume(int16_t* buf, size_t n) {
   for (size_t i = 0; i < n; i++) { buf[i] >>= 2; }
 }
 
+// Audio starting or stopping mid-waveform (skip, pause, underrun) jumps to or from
+// zero, which is the click. Fade in after silence, and ramp the last sample down to
+// zero when audio stops.
+#define FADE_SAMPLES 256 // ~6 ms
+
+// Returns the new fade position
+static size_t apply_fade_in(int16_t* buf, size_t samples, size_t position) {
+  for (size_t i = 0; i < samples && position < FADE_SAMPLES; i++, position++) {
+    buf[i * 2] = (int16_t)((int32_t)buf[i * 2] * (int32_t)position / FADE_SAMPLES);
+    buf[i * 2 + 1] = (int16_t)((int32_t)buf[i * 2 + 1] * (int32_t)position / FADE_SAMPLES);
+  }
+  return position;
+}
+
+// Fill buf with a ramp from the last output sample down to zero, followed by silence
+static void fill_fade_out(int16_t* buf, size_t samples, int16_t left, int16_t right) {
+  for (size_t i = 0; i < samples; i++) {
+    int32_t remaining = i < FADE_SAMPLES ? (int32_t)(FADE_SAMPLES - i) : 0;
+    buf[i * 2] = (int16_t)((int32_t)left * remaining / FADE_SAMPLES);
+    buf[i * 2 + 1] = (int16_t)((int32_t)right * remaining / FADE_SAMPLES);
+  }
+}
+
 static void playback_task(void* arg) {
   // Use DMA-capable internal RAM for lowest latency transfers
   size_t   pcm_size = (size_t)FRAME_SAMPLES * 2 * sizeof(int16_t);
@@ -52,7 +96,10 @@ static void playback_task(void* arg) {
     return;
   }
 
-  size_t written;
+  size_t  written;
+  size_t  fade_position = 0; // FADE_SAMPLES once faded in
+  int16_t last_left = 0;
+  int16_t last_right = 0;
   while (true) {
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES);
 
@@ -63,12 +110,24 @@ static void playback_task(void* arg) {
         play_active = true;
       }
       apply_volume(pcm, samples * 2);
+      fade_position = apply_fade_in(pcm, samples, fade_position);
+      last_left = pcm[(samples - 1) * 2];
+      last_right = pcm[(samples - 1) * 2 + 1];
       i2s_channel_write(tx_handle, pcm, samples * 4, &written, portMAX_DELAY);
       play_frames++;
     } else {
       play_active = false;
       play_underruns++;
-      i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written, portMAX_DELAY);
+      fade_position = 0;
+      follow_sample_rate();
+      if (last_left != 0 || last_right != 0) {
+        fill_fade_out(pcm, FRAME_SAMPLES, last_left, last_right);
+        last_left = 0;
+        last_right = 0;
+        i2s_channel_write(tx_handle, pcm, (size_t)FRAME_SAMPLES * 4, &written, portMAX_DELAY);
+      } else {
+        i2s_channel_write(tx_handle, silence, (size_t)FRAME_SAMPLES * 4, &written, portMAX_DELAY);
+      }
       taskYIELD();
     }
   }

@@ -26,3 +26,8 @@ esp_err_t wifi_get_ip_str(char* ip_str, size_t len);
  * Stop WiFi
  */
 void wifi_stop(void);
+
+/**
+ * Signal strength (dBm) of the connected phone; false when none is connected
+ */
+bool wifi_get_station_rssi(int* rssi);

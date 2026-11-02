@@ -2,12 +2,12 @@
 
 #include <errno.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "audio_receiver.h"
 #include "config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -28,17 +28,28 @@ static int          server_socket = -1;
 static TaskHandle_t server_task_handle = NULL;
 static bool         server_running = false;
 
+// Connections served side by side: iOS opens extra ones (GET /info when the AirPlay
+// picker opens) and a passenger's phone may connect. A new connection no longer ends
+// the playing session; only a SETUP takes it over (see rtsp_handlers.c).
+#define MAX_CLIENTS 4
+
+// Dead connections (phone left the WiFi) are found by TCP keepalive after
+// KEEPALIVE_IDLE_S + KEEPALIVE_INTERVAL_S * KEEPALIVE_COUNT seconds
+#define KEEPALIVE_IDLE_S     30
+#define KEEPALIVE_INTERVAL_S 5
+#define KEEPALIVE_COUNT      4
+
 // Client slot for tracking connections
 typedef struct {
   rtsp_conn_t*  conn;
   TaskHandle_t  task;
   int           socket;
   volatile bool should_stop;
-  volatile bool is_old; // Marked as old client being killed
+  uint32_t      accepted; // Accept order, the oldest idle connection is evicted first
 } client_slot_t;
 
-static client_slot_t clients[2] = {0}; // Current and old
-static int           current_slot = 0;
+static client_slot_t clients[MAX_CLIENTS] = {0};
+static uint32_t      accept_count = 0;
 
 // Helper to grow buffer
 static uint8_t* grow_buffer(uint8_t* old_buf, size_t old_size, size_t new_size, size_t data_len) {
@@ -188,42 +199,62 @@ cleanup:
   free(buffer);
   close(slot->socket);
 
-  // Always stop event task before closing its socket
-  rtsp_stop_event_port_task();
-  if (conn->event_socket >= 0) {
-    close(conn->event_socket);
-    conn->event_socket = -1;
-  }
-
-  // Only stop audio receiver when server is shutting down
-  // When replaced by new client (is_old), let new client manage audio receiver
-  // to avoid race conditions where we kill the new client's session
-  if (!server_running) { audio_receiver_stop(); }
-
-  rtsp_conn_cleanup(conn);
+  // Stops audio and the event task only if this connection had the session (another
+  // connection may have taken it over); then this connection's own sockets
+  rtsp_release_session(conn);
   rtsp_conn_free(conn);
 
   slot->conn = NULL;
   slot->socket = -1;
-  slot->task = NULL;
   slot->should_stop = false;
-  slot->is_old = false;
+  slot->task = NULL;
 
   vTaskDelete(NULL);
 }
 
-// Signal old client to stop (non-blocking)
-static void signal_old_client_stop(int old_slot) {
-  client_slot_t* old = &clients[old_slot];
-  if (old->task == NULL) { return; }
+// Ask a client to stop (non-blocking): shutdown unblocks its recv
+static void signal_client_stop(client_slot_t* slot) {
+  if (slot->task == NULL) { return; }
+  slot->should_stop = true;
+  if (slot->socket >= 0) { shutdown(slot->socket, SHUT_RDWR); }
+}
 
-  ESP_LOGI(TAG, "Signaling old client to stop");
-  old->is_old = true;
-  old->should_stop = true;
+static int find_free_slot(void) {
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    if (clients[i].task == NULL) { return i; }
+  }
+  return -1;
+}
 
-  // Shutdown socket to unblock recv
-  if (old->socket >= 0) { shutdown(old->socket, SHUT_RDWR); }
-  // Task will clean itself up
+// All slots taken: end the oldest connection that does not have the playing session
+static int make_free_slot(void) {
+  client_slot_t* oldest = NULL;
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    client_slot_t* slot = &clients[i];
+    if (slot->task == NULL || rtsp_owns_session(slot->conn)) { continue; }
+    if (!oldest || (int32_t)(slot->accepted - oldest->accepted) < 0) { oldest = slot; }
+  }
+  if (!oldest) { return -1; }
+
+  ESP_LOGI(TAG, "All client slots in use, closing the oldest idle connection");
+  signal_client_stop(oldest);
+  for (int waited = 0; waited < 1000; waited += 50) {
+    int free_slot = find_free_slot();
+    if (free_slot >= 0) { return free_slot; }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return -1;
+}
+
+static void enable_keepalive(int socket) {
+  int on = 1;
+  int idle = KEEPALIVE_IDLE_S;
+  int interval = KEEPALIVE_INTERVAL_S;
+  int count = KEEPALIVE_COUNT;
+  setsockopt(socket, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+  setsockopt(socket, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+  setsockopt(socket, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+  setsockopt(socket, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
 }
 
 static void server_task(void* pvParameters) {
@@ -233,12 +264,11 @@ static void server_task(void* pvParameters) {
   socklen_t          client_addr_len = sizeof(client_addr);
 
   // Initialize slots
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < MAX_CLIENTS; i++) {
     clients[i].socket = -1;
     clients[i].conn = NULL;
     clients[i].task = NULL;
     clients[i].should_stop = false;
-    clients[i].is_old = false;
   }
 
   server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -283,26 +313,21 @@ static void server_task(void* pvParameters) {
     }
 
     ESP_LOGI(TAG, "New client connected");
+    enable_keepalive(new_socket);
 
-    // Find slot for new client (alternate between 0 and 1)
-    int new_slot = 1 - current_slot;
-
-    // If new slot still has a running task, wait for it briefly
-    if (clients[new_slot].task != NULL) {
-      int timeout = 10;
-      while (clients[new_slot].task != NULL && timeout > 0) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        timeout--;
-      }
+    int new_slot = find_free_slot();
+    if (new_slot < 0) { new_slot = make_free_slot(); }
+    if (new_slot < 0) {
+      ESP_LOGW(TAG, "No client slot free, refusing connection");
+      close(new_socket);
+      continue;
     }
 
-    // Signal old client to stop (in background)
-    signal_old_client_stop(current_slot);
-
     // Setup new slot
+    clients[new_slot].conn = NULL;
     clients[new_slot].socket = new_socket;
     clients[new_slot].should_stop = false;
-    clients[new_slot].is_old = false;
+    clients[new_slot].accepted = accept_count++;
 
     // Start new client task immediately
     BaseType_t ret = xTaskCreatePinnedToCore(
@@ -317,18 +342,11 @@ static void server_task(void* pvParameters) {
       ESP_LOGE(TAG, "Failed to create client task");
       close(new_socket);
       clients[new_slot].socket = -1;
-    } else {
-      current_slot = new_slot;
     }
   }
 
   // Stop all clients
-  for (int i = 0; i < 2; i++) {
-    if (clients[i].task != NULL) {
-      clients[i].should_stop = true;
-      if (clients[i].socket >= 0) { shutdown(clients[i].socket, SHUT_RDWR); }
-    }
-  }
+  for (int i = 0; i < MAX_CLIENTS; i++) { signal_client_stop(&clients[i]); }
 
   vTaskDelay(pdMS_TO_TICKS(500));
 

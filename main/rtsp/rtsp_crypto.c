@@ -21,6 +21,32 @@ static int send_all(int socket, const uint8_t* data, size_t len) {
   return 0;
 }
 
+// Receive timeouts (1 s each, SO_RCVTIMEO of the client socket) to wait out inside a frame
+#define FRAME_TIMEOUTS_MAX 30
+
+// Read exactly len bytes. A receive timeout before anything of the frame was read
+// returns -1 with errno EAGAIN, so the caller can check whether to stop and retry.
+// Once a frame has started, its bytes must not be dropped: the stream could never be
+// decrypted again. Timeouts in the middle (a WiFi stall) are waited out instead.
+static int recv_exact(int socket, uint8_t* buffer, size_t len, bool frame_started) {
+  size_t received = 0;
+  int    timeouts = 0;
+  while (received < len) {
+    int r = recv(socket, buffer + received, len - received, 0);
+    if (r > 0) {
+      received += (size_t)r;
+      continue;
+    }
+    if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      if (!frame_started && received == 0) { return -1; }
+      if (++timeouts < FRAME_TIMEOUTS_MAX) { continue; }
+      errno = ETIMEDOUT; // Not EAGAIN: retrying would read from the middle of the frame
+    }
+    return -1;
+  }
+  return 0;
+}
+
 int rtsp_crypto_read_block(int socket, rtsp_conn_t* conn, uint8_t* buffer, size_t buffer_size) {
   if (!conn || !conn->hap_session || !conn->encrypted_mode) {
     // Expected during session teardown - not an error
@@ -29,12 +55,7 @@ int rtsp_crypto_read_block(int socket, rtsp_conn_t* conn, uint8_t* buffer, size_
 
   // Read 2-byte length header (little-endian)
   uint8_t len_buf[2];
-  int     received = 0;
-  while (received < 2) {
-    int r = recv(socket, len_buf + received, 2 - received, 0);
-    if (r <= 0) { return -1; }
-    received += r;
-  }
+  if (recv_exact(socket, len_buf, sizeof(len_buf), false) != 0) { return -1; }
 
   uint16_t block_len = (uint16_t)len_buf[0] | ((uint16_t)len_buf[1] << 8);
 
@@ -52,14 +73,9 @@ int rtsp_crypto_read_block(int socket, rtsp_conn_t* conn, uint8_t* buffer, size_
     return -1;
   }
 
-  received = 0;
-  while ((size_t)received < encrypted_len) {
-    int r = recv(socket, encrypted + received, encrypted_len - received, 0);
-    if (r <= 0) {
-      free(encrypted);
-      return -1;
-    }
-    received += r;
+  if (recv_exact(socket, encrypted, encrypted_len, true) != 0) {
+    free(encrypted);
+    return -1;
   }
 
   // Decrypt using session keys
