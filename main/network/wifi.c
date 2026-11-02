@@ -192,14 +192,16 @@ void wifi_init_ap(void) {
   // interference (other cars, roadside WiFi). Audio needs ~1.5 Mbit/s at most.
   ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20));
 
-  // The AP drops a station after 300 s without a packet by default. A phone that is
-  // paused or locked can be that quiet, and the speaker disappears from it.
-  ESP_ERROR_CHECK(esp_wifi_set_inactive_time(WIFI_IF_AP, CONFIG_WIFI_INACTIVE_TIME));
-
   // Set 802.11n mode for better performance
   ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
 
   ESP_ERROR_CHECK(esp_wifi_start());
+
+  // The AP drops a station after 300 s without a packet by default. A phone that is
+  // paused or locked can be that quiet, and the speaker disappears from it.
+  // Only accepted once the AP runs; not worth a boot loop if it fails.
+  esp_err_t err = esp_wifi_set_inactive_time(WIFI_IF_AP, CONFIG_WIFI_INACTIVE_TIME);
+  if (err != ESP_OK) { ESP_LOGW(TAG, "Failed to set station inactive time: %s", esp_err_to_name(err)); }
 
   // Disable power saving for low latency audio
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));

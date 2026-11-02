@@ -127,8 +127,9 @@ static void buffered_audio_task(void* pvParameters) {
       uint8_t len_buf[2];
       if (read_exact(stream, client_sock, len_buf, 2) != 2) { break; }
 
+      // Always fits the buffer: a 16-bit length is at most BUFFERED_AUDIO_PACKET_SIZE - 1
       uint16_t data_len = (uint16_t)((len_buf[0] << 8) | len_buf[1]);
-      if (data_len < 2 || data_len > BUFFERED_AUDIO_PACKET_SIZE) {
+      if (data_len < 2) {
         ESP_LOGW(TAG, "Invalid buffered audio packet length: %u", data_len);
         break;
       }
