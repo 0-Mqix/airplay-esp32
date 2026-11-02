@@ -2,6 +2,7 @@
 #include "audio_receiver.h"
 #include "audio_stats.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hap.h"
@@ -12,7 +13,42 @@
 
 static const char* TAG = "main";
 
+// Why the board (re)started: a crash, watchdog or brownout shows up here after the fact
+static void log_reset_reason(void) {
+  esp_reset_reason_t reason = esp_reset_reason();
+  const char*        name = "other";
+  bool               abnormal = true;
+  switch (reason) {
+    case ESP_RST_POWERON:
+      name = "power on";
+      abnormal = false;
+      break;
+    case ESP_RST_SW:
+      name = "software restart";
+      abnormal = false;
+      break;
+    case ESP_RST_USB:
+      name = "USB (flashing)";
+      abnormal = false;
+      break;
+    case ESP_RST_EXT: name = "reset pin"; break;
+    case ESP_RST_PANIC: name = "crash (panic)"; break;
+    case ESP_RST_INT_WDT: name = "interrupt watchdog"; break;
+    case ESP_RST_TASK_WDT: name = "task watchdog"; break;
+    case ESP_RST_WDT: name = "watchdog"; break;
+    case ESP_RST_BROWNOUT: name = "brownout (power dip)"; break;
+    default: break;
+  }
+  if (abnormal) {
+    ESP_LOGW(TAG, "Reset reason: %s (%d)", name, (int)reason);
+  } else {
+    ESP_LOGI(TAG, "Reset reason: %s", name);
+  }
+}
+
 void app_main(void) {
+  log_reset_reason();
+
   // Initialize NVS (needed for WiFi driver)
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {

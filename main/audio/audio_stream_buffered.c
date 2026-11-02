@@ -138,7 +138,6 @@ static void buffered_audio_task(void* pvParameters) {
       if (read_exact(stream, client_sock, packet, packet_len) != (ssize_t)packet_len) { break; }
 
       buffered_handle_packet(stream, packet, packet_len);
-      state->buffered_stack_free = uxTaskGetStackHighWaterMark(NULL);
     }
 
     close(client_sock);

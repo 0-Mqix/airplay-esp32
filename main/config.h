@@ -12,8 +12,10 @@
 #define CONFIG_I2S_LRCK_PIN 12
 
 // Audio buffering (there is no clock sync with the phone, so these set the latency)
-// Realtime (UDP): audio buffered before playback starts, and the level held during playback
-#define CONFIG_REALTIME_BUFFER_MS 500
+// Realtime (UDP): audio buffered before playback starts, and the level held during playback.
+// The iPhone's radio sometimes goes away for ~0.7 s (AirDrop/Handoff, scans): the buffer
+// has to outlast that plus the retransmits. Skips take this + ~0.2 s.
+#define CONFIG_REALTIME_BUFFER_MS 1000
 // Buffered (TCP): audio needed before playback starts; the phone sends far ahead after that
 #define CONFIG_BUFFERED_START_MS 300
 

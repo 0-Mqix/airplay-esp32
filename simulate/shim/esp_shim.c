@@ -68,6 +68,7 @@ typedef struct sim_ring_item {
 } sim_ring_item_t;
 
 struct sim_ring {
+  bool             with_caps;
   size_t           capacity;
   size_t           used;
   sim_ring_item_t* head;   // Oldest item still holding space
@@ -86,11 +87,15 @@ RingbufHandle_t xRingbufferCreate(size_t capacity, RingbufferType_t type) {
 
 RingbufHandle_t xRingbufferCreateWithCaps(size_t capacity, RingbufferType_t type, uint32_t caps) {
   (void)caps;
-  return xRingbufferCreate(capacity, type);
+  RingbufHandle_t ring = xRingbufferCreate(capacity, type);
+  if (ring) { ring->with_caps = true; }
+  return ring;
 }
 
-void vRingbufferDelete(RingbufHandle_t ring) {
-  if (!ring) { return; }
+size_t sim_ring_leaked_bytes = 0;
+int    sim_ring_misuse = 0;
+
+static void ring_free(RingbufHandle_t ring) {
   sim_ring_item_t* item = ring->head;
   while (item) {
     sim_ring_item_t* next = item->next;
@@ -98,6 +103,26 @@ void vRingbufferDelete(RingbufHandle_t ring) {
     item = next;
   }
   free(ring);
+}
+
+void vRingbufferDelete(RingbufHandle_t ring) {
+  if (!ring) { return; }
+  if (ring->with_caps) {
+    // ESP-IDF treats it as static memory and frees nothing
+    sim_ring_leaked_bytes += ring->capacity;
+    return;
+  }
+  ring_free(ring);
+}
+
+void vRingbufferDeleteWithCaps(RingbufHandle_t ring) {
+  if (!ring) { return; }
+  if (!ring->with_caps) {
+    // ESP-IDF would heap_caps_free() memory it did not allocate that way
+    sim_ring_misuse++;
+    return;
+  }
+  ring_free(ring);
 }
 
 BaseType_t xRingbufferSend(RingbufHandle_t ring, const void* data, size_t size, TickType_t ticks) {

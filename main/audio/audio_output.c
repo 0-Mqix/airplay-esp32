@@ -44,14 +44,13 @@ static void follow_sample_rate(void) {
   i2s_channel_enable(tx_handle);
 }
 
-// Playback stats — reset on each playout start
+// Playback stats: frames played since boot, and whether audio is playing right now.
+// Stalls (the buffer running dry) are counted by the receiver.
 static volatile uint32_t play_frames = 0;
-static volatile uint32_t play_underruns = 0;
 static volatile bool     play_active = false;
 
-void audio_output_get_playback_stats(uint32_t* frames, uint32_t* underruns, bool* active) {
+void audio_output_get_playback_stats(uint32_t* frames, bool* active) {
   if (frames) { *frames = play_frames; }
-  if (underruns) { *underruns = play_underruns; }
   if (active) { *active = play_active; }
 }
 
@@ -104,11 +103,7 @@ static void playback_task(void* arg) {
     size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES);
 
     if (samples > 0) {
-      if (!play_active) {
-        play_frames = 0;
-        play_underruns = 0;
-        play_active = true;
-      }
+      play_active = true;
       apply_volume(pcm, samples * 2);
       fade_position = apply_fade_in(pcm, samples, fade_position);
       last_left = pcm[(samples - 1) * 2];
@@ -117,7 +112,6 @@ static void playback_task(void* arg) {
       play_frames++;
     } else {
       play_active = false;
-      play_underruns++;
       fade_position = 0;
       follow_sample_rate();
       if (last_left != 0 || last_right != 0) {

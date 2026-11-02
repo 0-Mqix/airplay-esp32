@@ -38,6 +38,9 @@ int64_t sim_time_us = 0;
 bool    sim_verbose = false;
 int     sim_warnings = 0;
 
+extern size_t sim_ring_leaked_bytes; // esp_shim.c
+extern int    sim_ring_misuse;
+
 #define SAMPLE_RATE   44100
 #define ALAC_SAMPLES  352
 #define AAC_SAMPLES   1024
@@ -49,6 +52,9 @@ int     sim_warnings = 0;
 #define SETTLE_US     3000000                       // Ignore delay/buffer right after a start
 #define HISTORY_SIZE  4096
 #define MAX_TRACKS    8 // Track ids 1..7 (3 bits in the fake samples)
+
+// Realtime play/skip/resume to sound: the start buffer, the output DMA and some margin
+#define REALTIME_START_MS (CONFIG_REALTIME_BUFFER_MS + OUTPUT_DMA_MS + 100)
 
 typedef struct {
   const char* name;
@@ -63,7 +69,8 @@ typedef struct {
   double      stall_every_s;
   double      stall_ms; // WiFi stall: packets held back, then delivered in a burst
   double      outage_at_s;
-  double      outage_ms; // Packets lost completely
+  double      outage_ms;      // Packets lost completely
+  double      outage_every_s; // Repeat the outage (phone radio away for AirDrop/Handoff, scans)
   double      skip_every_s;
   double      skip_until_s; // Stop skipping after this, 0 = never
   double      pause_every_s;
@@ -91,7 +98,7 @@ static const scenario_t scenarios[] = {
    .base_delay_ms = 3,
    .jitter_ms = 20,
    .loss = 0.002,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 60},
   {.name = "realtime-drift-fast",
    .description = "Spotify, 2 h, I2S clock +300 ppm, 30 ms jitter, 0.3% loss, 400 ms stall every 90 s",
@@ -102,7 +109,7 @@ static const scenario_t scenarios[] = {
    .loss = 0.003,
    .stall_every_s = 90,
    .stall_ms = 400,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 80},
   {.name = "realtime-drift-slow",
    .description = "Spotify, 2 h, I2S clock -300 ppm, 30 ms jitter, 0.3% loss, 400 ms stall every 90 s",
@@ -113,7 +120,7 @@ static const scenario_t scenarios[] = {
    .loss = 0.003,
    .stall_every_s = 90,
    .stall_ms = 400,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 80},
   {.name = "realtime-skip",
    .description = "Spotify, 10 min, skip every 15 s",
@@ -122,7 +129,7 @@ static const scenario_t scenarios[] = {
    .jitter_ms = 20,
    .loss = 0.002,
    .skip_every_s = 15,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 60},
   {.name = "realtime-pause",
    .description = "Spotify, 10 min, 3 s pause every 30 s",
@@ -132,7 +139,18 @@ static const scenario_t scenarios[] = {
    .loss = 0.002,
    .pause_every_s = 30,
    .pause_ms = 3000,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
+   .max_delay_spread_ms = 60},
+  {.name = "realtime-radio-gaps",
+   .description = "Spotify, 30 min, phone radio away for 0.7 s every 3 min (AirDrop/Handoff)",
+   .duration_s = 1800,
+   .base_delay_ms = 3,
+   .jitter_ms = 20,
+   .loss = 0.002,
+   .outage_at_s = 60,
+   .outage_ms = 700,
+   .outage_every_s = 180,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 60},
   {.name = "realtime-outage",
    .description = "Spotify, 5 min, WiFi gone for 3 s",
@@ -143,7 +161,7 @@ static const scenario_t scenarios[] = {
    .outage_at_s = 120,
    .outage_ms = 3000,
    .max_gaps = 1,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 60},
   {.name = "buffered-steady",
    .description = "Apple Music, 30 min, 800 ms stall every 60 s",
@@ -189,7 +207,7 @@ static const scenario_t scenarios[] = {
    .loss = 0.002,
    .skip_every_s = 0.4,
    .skip_until_s = 20,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 60},
   {.name = "buffered-skip-spam",
    .description = "Apple Music, next pressed every 0.4 s for 20 s, then plays",
@@ -211,7 +229,7 @@ static const scenario_t scenarios[] = {
    .duplicate = 0.01,
    .garbage = 0.01,
    .max_gaps = 60,
-   .max_start_ms = 1200, // A loss burst in the first half second delays the start
+   .max_start_ms = REALTIME_START_MS + 400, // A loss burst at the start delays it
    .max_delay_spread_ms = 150},
   {.name = "buffered-hostile",
    .description = "Apple Music, 30 min, malformed packets, 2 s stall every 2 min",
@@ -237,7 +255,7 @@ static const scenario_t scenarios[] = {
    .pause_ms = 1500,
    .restart_every_s = 53,
    .max_gaps = 5,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 120},
   {.name = "buffered-chaos",
    .description = "Apple Music, 20 min, skips, pauses, restarts and format changes mixed",
@@ -270,7 +288,7 @@ static const scenario_t scenarios[] = {
    .skip_every_s = 70,
    .start_timestamp = 0xFFFFFFFFu - SAMPLE_RATE * 20,
    .start_sequence = 0xFF00,
-   .max_start_ms = 800,
+   .max_start_ms = REALTIME_START_MS,
    .max_delay_spread_ms = 60},
   {.name = "buffered-wrap",
    .description = "Apple Music, timestamps wrap past 2^32 and sequence numbers past 2^24, with skips",
@@ -387,7 +405,10 @@ static packet_t network_pop(void) {
 
 static bool in_outage(int64_t time_us) {
   double start_us = scenario->outage_at_s * 1e6;
-  return scenario->outage_ms > 0 && time_us >= start_us && time_us < start_us + scenario->outage_ms * 1000;
+  if (scenario->outage_ms <= 0 || time_us < start_us) { return false; }
+  double since_us = (double)time_us - start_us;
+  if (scenario->outage_every_s > 0) { since_us = fmod(since_us, scenario->outage_every_s * 1e6); }
+  return since_us < scenario->outage_ms * 1000;
 }
 
 // The connection is gone (TEARDOWN, new SETUP): nothing in flight arrives any more
@@ -770,8 +791,9 @@ static void check_sample(int16_t left, int16_t right, double out_us) {
     int32_t error = step - 1 - (int32_t)speaker.zeros_since_previous;
     if (speaker.gap_since_previous) {
       if (error > 0) { results.audio_lost_ms += (double)error * 1000 / SAMPLE_RATE; }
-    } else if (speaker.zeros_since_previous > 0 && error >= -8 && error <= 8) {
-      // Drift correction also inserts/drops samples inside concealment silence
+    } else if (speaker.zeros_since_previous > 0 && labs(error) <= speaker.zeros_since_previous / ALAC_SAMPLES + 2) {
+      // Drift correction also inserts/drops samples inside concealment silence (up to
+      // one per packet)
     } else if (error == -1) {
       results.inserted++;
     } else if (error == 1) {
@@ -1041,7 +1063,8 @@ static bool run_scenario(void) {
     }
   }
 
-  if (expected.waiting) { results.worst_start_ms = 1e9; } // Never started
+  // Never started, unless the last start was too close to the end to finish
+  if (expected.waiting && (double)(end_us - expected.start_us) / 1000 > scenario->max_start_ms) { results.worst_start_ms = 1e9; }
 
   // Verdict
   char problems[512] = "";
@@ -1057,6 +1080,11 @@ static bool run_scenario(void) {
     PROBLEM(" delay drifts %.0f ms (max %.0f);", spread_ms, scenario->max_delay_spread_ms);
   }
   if (scenario->up_next_at_s > 0 && !results.up_next_ok) { PROBLEM(" current track cut short;"); }
+
+  // TEARDOWN at the end, then everything the stream allocated must be released
+  audio_receiver_stop();
+  if (sim_ring_leaked_bytes > 0) { PROBLEM(" %zu KB of ring buffers leaked;", sim_ring_leaked_bytes / 1024); }
+  if (sim_ring_misuse > 0) { PROBLEM(" %d ring buffers freed the wrong way;", sim_ring_misuse); }
 #undef PROBLEM
 
   bool passed = problems[0] == '\0';

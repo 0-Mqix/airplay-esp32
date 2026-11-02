@@ -73,10 +73,6 @@ typedef struct {
   // Set by the reader while audio plays out (not while building the start buffer)
   atomic_bool playout_running;
 
-  // Least free stack seen by the decoding tasks (bytes), for the stats log
-  uint32_t decode_stack_free;
-  uint32_t buffered_stack_free;
-
   portMUX_TYPE   flush_lock;
   flush_filter_t flush_filter;
 } audio_receiver_state_t;

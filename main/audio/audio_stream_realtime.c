@@ -26,7 +26,7 @@
 // it arrive at once, and the retransmits need a round trip on top. A burst plus the
 // wait must stay below the playback buffer (CONFIG_REALTIME_BUFFER_MS).
 #define REORDER_SLOTS          128
-#define REORDER_MAX_WAIT_US    120000 // Wait for a missing packet's retransmit
+#define REORDER_MAX_WAIT_US    250000 // Wait for a missing packet's retransmit
 #define REORDER_MAX_WAIT       100    // Packets, never hold more than this (slots run out)
 #define REORDER_MIN_BUFFER_MS  100    // Stop waiting when playback has less than this left
 #define REORDER_RETRY_INTERVAL 8      // Packets between retransmit requests while waiting
@@ -468,7 +468,6 @@ static void decode_task(void* pvParameters) {
 
     decode_item(state, item, item_size);
     vRingbufferReturnItem(state->decode_ring, item);
-    state->decode_stack_free = uxTaskGetStackHighWaterMark(NULL);
   }
 
   state->decode_task_handle = NULL;
@@ -529,6 +528,20 @@ static void receiver_task(void* pvParameters) {
   vTaskDelete(NULL);
 }
 
+// A ring from xRingbufferCreateWithCaps() must be freed with vRingbufferDeleteWithCaps():
+// vRingbufferDelete() frees nothing for it, which leaked 512 KB of PSRAM per stream stop
+static bool decode_ring_with_caps = false;
+
+static void decode_ring_delete(audio_receiver_state_t* state) {
+  if (!state->decode_ring) { return; }
+  if (decode_ring_with_caps) {
+    vRingbufferDeleteWithCaps(state->decode_ring);
+  } else {
+    vRingbufferDelete(state->decode_ring);
+  }
+  state->decode_ring = NULL;
+}
+
 static esp_err_t realtime_start(audio_stream_t* stream, uint16_t port) {
   audio_receiver_state_t* state = audio_stream_state(stream);
   if (stream->running) {
@@ -555,13 +568,11 @@ static esp_err_t realtime_start(audio_stream_t* stream, uint16_t port) {
   reorder_reset();
 
   // Free stale decode ring if previous stop didn't fully clean up
-  if (state->decode_ring) {
-    vRingbufferDelete(state->decode_ring);
-    state->decode_ring = NULL;
-  }
+  decode_ring_delete(state);
 
   // Create decode ring buffer on PSRAM for recv→decode pipeline
   state->decode_ring = xRingbufferCreateWithCaps(DECODE_RING_SIZE, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  decode_ring_with_caps = state->decode_ring != NULL;
   if (!state->decode_ring) {
     ESP_LOGW(TAG, "PSRAM decode ring failed, trying internal RAM");
     state->decode_ring = xRingbufferCreate(DECODE_RING_SIZE / 2, RINGBUF_TYPE_NOSPLIT);
@@ -590,8 +601,7 @@ static esp_err_t realtime_start(audio_stream_t* stream, uint16_t port) {
     TASK_DECODE_CORE);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create decode task");
-    vRingbufferDelete(state->decode_ring);
-    state->decode_ring = NULL;
+    decode_ring_delete(state);
     close(state->data_socket);
     state->data_socket = 0;
     if (state->control_socket >= 0) {
@@ -616,8 +626,7 @@ static esp_err_t realtime_start(audio_stream_t* stream, uint16_t port) {
     stream->running = false;
     vTaskDelay(pdMS_TO_TICKS(200));
     state->decode_task_handle = NULL;
-    vRingbufferDelete(state->decode_ring);
-    state->decode_ring = NULL;
+    decode_ring_delete(state);
     close(state->data_socket);
     state->data_socket = 0;
     if (state->control_socket >= 0) {
@@ -657,11 +666,7 @@ static void realtime_stop(audio_stream_t* stream) {
     state->decode_task_handle = NULL;
   }
 
-  // Clean up decode ring buffer
-  if (state->decode_ring) {
-    vRingbufferDelete(state->decode_ring);
-    state->decode_ring = NULL;
-  }
+  decode_ring_delete(state);
 }
 
 static uint16_t realtime_get_port(audio_stream_t* stream) {

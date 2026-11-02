@@ -29,6 +29,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct {
   RingbufHandle_t ring;
+  bool            ring_with_caps; // Needs vRingbufferDeleteWithCaps()
   int             buffered_frames;
   int             buffered_samples; // Per channel, across all queued frames
   portMUX_TYPE    lock;

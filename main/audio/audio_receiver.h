@@ -178,9 +178,9 @@ int audio_receiver_get_buffered_ms(void);
 int audio_receiver_get_sample_rate(void);
 
 /**
- * Get the least free stack (bytes) seen by the realtime decode and buffered tasks
+ * Number of times playback ran out of audio while playing (since boot)
  */
-void audio_receiver_get_stack_free(uint32_t* decode, uint32_t* buffered);
+uint32_t audio_receiver_get_stalls(void);
 
 /**
  * Stop only the buffered receiver but keep playing buffered data

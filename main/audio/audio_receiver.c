@@ -57,6 +57,9 @@ static struct {
 static atomic_uint playing_timestamp = 0;
 static atomic_bool playing_valid = false;
 
+// Playback ran out of audio while playing (stats)
+static atomic_uint stall_count = 0;
+
 // Deferred flush window: frames in [from, until) are skipped by the reader
 static portMUX_TYPE discard_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct {
@@ -420,6 +423,7 @@ size_t audio_receiver_read(int16_t* buffer, size_t samples) {
       // it arrives, which would keep the buffer empty and glitch until the next flush
       playout.started = false;
       atomic_store(&receiver.playout_running, false);
+      atomic_fetch_add(&stall_count, 1);
       return 0;
     }
 
@@ -506,10 +510,7 @@ int audio_receiver_get_buffered_frames(void) { return audio_buffer_get_frame_cou
 
 int audio_receiver_get_sample_rate(void) { return audio_receiver_sample_rate(); }
 
-void audio_receiver_get_stack_free(uint32_t* decode, uint32_t* buffered) {
-  if (decode) { *decode = receiver.decode_stack_free; }
-  if (buffered) { *buffered = receiver.buffered_stack_free; }
-}
+uint32_t audio_receiver_get_stalls(void) { return atomic_load(&stall_count); }
 
 int audio_receiver_get_buffered_ms(void) {
   return (int)((int64_t)audio_buffer_get_sample_count(&receiver.buffer) * 1000 / audio_receiver_sample_rate());

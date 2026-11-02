@@ -23,6 +23,17 @@ static void audio_buffer_adjust(audio_buffer_t* buffer, int frames, int samples)
   portEXIT_CRITICAL(&buffer->lock);
 }
 
+// vRingbufferDelete() does not free a ring made by xRingbufferCreateWithCaps()
+static void audio_buffer_delete_ring(audio_buffer_t* buffer) {
+  if (!buffer->ring) { return; }
+  if (buffer->ring_with_caps) {
+    vRingbufferDeleteWithCaps(buffer->ring);
+  } else {
+    vRingbufferDelete(buffer->ring);
+  }
+  buffer->ring = NULL;
+}
+
 static int audio_buffer_item_samples(const void* item, size_t item_size) {
   if (item_size < sizeof(audio_frame_header_t)) { return 0; }
   return ((const audio_frame_header_t*)item)->samples_per_channel;
@@ -84,6 +95,7 @@ esp_err_t audio_buffer_init(audio_buffer_t* buffer) {
   buffer->buffered_samples = 0;
 
   buffer->ring = xRingbufferCreateWithCaps(AUDIO_BUFFER_SIZE, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  buffer->ring_with_caps = buffer->ring != NULL;
   if (!buffer->ring) {
     ESP_LOGW(TAG, "PSRAM not available, using smaller buffer");
     buffer->ring = xRingbufferCreate(1024 * 1024, RINGBUF_TYPE_NOSPLIT);
@@ -97,8 +109,7 @@ esp_err_t audio_buffer_init(audio_buffer_t* buffer) {
   buffer->frame_buffer = (uint8_t*)malloc(sizeof(audio_frame_header_t) + max_pcm_bytes);
   if (!buffer->frame_buffer) {
     ESP_LOGE(TAG, "Failed to allocate frame buffer");
-    vRingbufferDelete(buffer->ring);
-    buffer->ring = NULL;
+    audio_buffer_delete_ring(buffer);
     return ESP_ERR_NO_MEM;
   }
 
@@ -113,10 +124,7 @@ esp_err_t audio_buffer_init(audio_buffer_t* buffer) {
 void audio_buffer_deinit(audio_buffer_t* buffer) {
   if (!buffer) { return; }
 
-  if (buffer->ring) {
-    vRingbufferDelete(buffer->ring);
-    buffer->ring = NULL;
-  }
+  audio_buffer_delete_ring(buffer);
 
   if (buffer->frame_buffer) {
     free(buffer->frame_buffer);
